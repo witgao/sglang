@@ -59,7 +59,18 @@ class Req:
     condition_image: torch.Tensor | PIL.Image.Image | None = None
     pixel_values: torch.Tensor | PIL.Image.Image | None = None
     preprocessed_image: torch.Tensor | None = None
-
+    image_latent2: dict = field(default_factory=dict)
+    samples: dict = field(default_factory=dict)
+    images: dict = field(default_factory=dict)
+    
+    # Audio inputs
+    audio_path: str | None = None
+    # Audio encoder hidden states
+    audio_embeds: list[torch.Tensor] = field(default_factory=list)
+    
+    condition_audio: torch.Tensor | None = None
+    original_condition_audio_sample_rate: int | None = None
+    
     # Text inputs
     prompt: str | list[str] | None = None
     negative_prompt: str | list[str] | None = None

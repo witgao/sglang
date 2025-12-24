@@ -227,6 +227,9 @@ class ComponentLoader(ABC):
             "processor": (AutoProcessorLoader, "transformers"),
         }
 
+        if transformers_or_diffusers == "original":
+            return OriginalModelLoader()
+        
         if module_type in module_loaders:
             loader_cls, expected_library = module_loaders[module_type]
             # Assert that the library matches what's expected for this module type
@@ -730,6 +733,29 @@ class GenericComponentLoader(ComponentLoader):
         super().__init__()
         self.library = library
 
+class OriginalModelLoader(ComponentLoader):
+
+    def load_customized(
+        self, component_model_path: str, server_args: ServerArgs, *args
+    ):
+        config = get_diffusers_component_config(model_path=component_model_path)
+
+        class_name = config.pop("_class_name")
+        assert (
+            class_name is not None
+        ), "Model config does not contain a _class_name attribute. Only diffusers format is supported."
+
+        pretrained_model_name_or_path = config.get("pretrained_model_name_or_path", None)
+        if pretrained_model_name_or_path != None:
+            config.pop("pretrained_model_name_or_path")
+            pretrained_model_name_or_path = os.path.join(str(component_model_path), pretrained_model_name_or_path)
+        else:
+            pretrained_model_name_or_path = component_model_path
+        
+        cls, _ = ModelRegistry.resolve_model_cls(class_name)
+
+        model = cls.from_single_file(pretrained_model_name_or_path, **config)
+        return model
 
 class PipelineComponentLoader:
     """

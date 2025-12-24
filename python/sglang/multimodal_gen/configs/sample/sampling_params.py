@@ -89,6 +89,9 @@ class SamplingParams:
     # Image inputs
     image_path: str | None = None
 
+    # Audio inputs
+    audio_path: str | None = None 
+    
     # Text inputs
     prompt: str | list[str] | None = None
     negative_prompt: str = (
@@ -539,6 +542,12 @@ class SamplingParams:
                 "and satisfy model temporal constraints. Default: true. "
                 "Examples: --adjust-frames, --adjust-frames true, --adjust-frames false."
             ),
+        )
+        parser.add_argument(
+            "--audio-path",
+            type=str,
+            default=SamplingParams.audio_path,
+            help="Path to input audio for audio-image-to-video generation",
         )
         return parser
 

@@ -24,6 +24,7 @@ from sglang.multimodal_gen.configs.pipeline_configs import (
     WanT2V480PConfig,
     WanT2V720PConfig,
     ZImagePipelineConfig,
+    InfiniteTalkConfig
 )
 from sglang.multimodal_gen.configs.pipeline_configs.base import PipelineConfig
 from sglang.multimodal_gen.configs.pipeline_configs.flux import Flux2PipelineConfig
@@ -57,6 +58,7 @@ from sglang.multimodal_gen.configs.sample.wan import (
     WanT2V_14B_SamplingParams,
 )
 from sglang.multimodal_gen.configs.sample.zimage import ZImageSamplingParams
+from sglang.multimodal_gen.configs.sample.infinite_talk import InfiniteTalkSamplingParam
 from sglang.multimodal_gen.runtime.pipelines_core.composed_pipeline_base import (
     ComposedPipelineBase,
 )
@@ -425,6 +427,13 @@ def _register_configs():
         sampling_param_cls=QwenImageSamplingParams,
         pipeline_config_cls=QwenImageEditPipelineConfig,
         hf_model_paths=["Qwen/Qwen-Image-Edit"],
+    )
+    
+    # InfiniteTalk
+    register_configs(
+        sampling_param_cls=InfiniteTalkSamplingParam,
+        pipeline_config_cls=InfiniteTalkConfig,
+        hf_model_paths=["InfiniteTalk"], # The hf_model_paths must match the model folder name 
     )
 
 

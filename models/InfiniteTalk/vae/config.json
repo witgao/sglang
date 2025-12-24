@@ -1,0 +1,4 @@
+{
+  "_class_name":"OriginalWanVAEModel",
+    "pretrained_model_name_or_path": "Wan2_1_VAE_bf16.safetensors"
+}

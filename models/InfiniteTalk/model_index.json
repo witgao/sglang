@@ -1,0 +1,36 @@
+{
+  "_class_name": "InfiniteTalkPipeline",
+  "_diffusers_version": "",
+  "audio_processor": [
+    "original",
+    "OriginalMelBandModel"
+  ],
+  "audio_encoder": [
+    "original",
+    "OriginalWav2Vec2Model"
+  ],
+  "image_encoder": [
+    "transformers",
+    "CLIPVisionModelWithProjection"
+  ],
+  "image_processor": [
+    "transformers",
+    "CLIPImageProcessor"
+  ],
+  "text_encoder": [
+    "transformers",
+    "UMT5EncoderModel"
+  ],
+  "tokenizer": [
+    "transformers",
+    "T5TokenizerFast"
+  ],
+  "vae": [
+    "original",
+    "OriginalWanVAEModel"
+  ],
+  "transformer": [
+    "original",
+    "OriginalWanTransformerModel"
+  ]
+}
