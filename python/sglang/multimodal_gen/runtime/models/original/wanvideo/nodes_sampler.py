@@ -3,30 +3,155 @@ import torch
 import numpy as np
 from tqdm import tqdm
 import inspect
-
+import logging
 from .wanvideo.modules.model import rope_params
 from .custom_linear import set_lora_params
 from .wanvideo.schedulers import get_scheduler
 from .multitalk.multitalk import timestep_transform, add_noise
 from .utils import(log, print_memory, fourier_filter, optimized_scale, setup_radial_attention,
                    compile_model, dict_to_device, tangential_projection, get_raag_guidance)
-from .nodes_model_loading import load_weights
+# from .nodes_model_loading import load_weights
 from contextlib import nullcontext
 
-from sglang.comfy import model_management as mm
+# from sglang.comfy import model_management as mm
 from sglang.comfy.utils import load_torch_file
 
 script_directory = os.path.dirname(os.path.abspath(__file__))
 
-device = mm.get_torch_device()
-offload_device = mm.unet_offload_device()
+device = torch.device(torch.cuda.current_device())
+offload_device = torch.device("cpu")
 
 rope_functions = ["default", "comfy", "comfy_chunked"]
 
 VAE_STRIDE = (4, 8, 8)
 PATCH_SIZE = (1, 2, 2)
 
+from .utils import set_module_tensor_to_device
 
+def load_weights(transformer, sd=None, weight_dtype=None, base_dtype=None, 
+                 transformer_load_device=None, block_swap_args=None, gguf=False, reader=None, patcher=None, compile_args=None):
+    params_to_keep = {"time_in", "patch_embedding", "time_", "modulation", "text_embedding", 
+                      "adapter", "add", "ref_conv", "casual_audio_encoder", "cond_encoder", "frame_packer", "audio_proj_glob", "face_encoder", "fuser_block"}
+    param_count = sum(1 for _ in transformer.named_parameters())
+    # pbar = ProgressBar(param_count)
+    cnt = 0
+    block_idx = vace_block_idx = None
+
+    if gguf:
+        pass
+        # logging.info("Using GGUF to load and assign model weights to device...")
+
+        # # Prepare sd from GGUF readers
+
+        # # handle possible non-GGUF weights
+        # extra_sd = {}
+        # for key, value in sd.items():
+        #     if value.device != torch.device("meta"):
+        #         extra_sd[key] = value
+
+        # sd = {}
+        # all_tensors = []
+        # for r in reader:
+        #     all_tensors.extend(r.tensors)
+        # for tensor in all_tensors:
+        #     name = rename_fuser_block(tensor.name)
+        #     if "glob" not in name and "audio_proj" in name:
+        #         name = name.replace("audio_proj", "multitalk_audio_proj")
+        #     load_device = device
+        #     if "vace_blocks." in name:
+        #         try:
+        #             vace_block_idx = int(name.split("vace_blocks.")[1].split(".")[0])
+        #         except Exception:
+        #             vace_block_idx = None
+        #     elif "blocks." in name and "face" not in name:
+        #         try:
+        #             block_idx = int(name.split("blocks.")[1].split(".")[0])
+        #         except Exception:
+        #             block_idx = None
+
+        #     if block_swap_args is not None:
+        #         if block_idx is not None:
+        #             if block_idx >= len(transformer.blocks) - block_swap_args.get("blocks_to_swap", 0):
+        #                 load_device = offload_device
+        #         elif vace_block_idx is not None:
+        #             if vace_block_idx >= len(transformer.vace_blocks) - block_swap_args.get("vace_blocks_to_swap", 0):
+        #                 load_device = offload_device
+                        
+        #     is_gguf_quant = tensor.tensor_type not in [GGMLQuantizationType.F32, GGMLQuantizationType.F16]
+        #     weights = torch.from_numpy(tensor.data.copy()).to(load_device)
+        #     sd[name] = GGUFParameter(weights, quant_type=tensor.tensor_type) if is_gguf_quant else weights
+        # sd.update(extra_sd)
+        # del all_tensors, extra_sd
+
+        # if not getattr(transformer, "gguf_patched", False):
+        #     transformer = _replace_with_gguf_linear(
+        #         transformer, base_dtype, sd, patches=patcher.patches, compile_args=compile_args
+        #     )
+        #     transformer.gguf_patched = True
+    else:
+        logging.info("Using accelerate to load and assign model weights to device...")
+    named_params = transformer.named_parameters()
+
+    for name, param in tqdm(named_params,
+            desc=f"Loading transformer parameters to {transformer_load_device}",
+            total=param_count,
+            leave=True):
+        block_idx = vace_block_idx = None
+        if "vace_blocks." in name:
+            try:
+                vace_block_idx = int(name.split("vace_blocks.")[1].split(".")[0])
+            except Exception:
+                vace_block_idx = None
+        elif "blocks." in name and "face" not in name:
+            try:
+                block_idx = int(name.split("blocks.")[1].split(".")[0])
+            except Exception:
+                block_idx = None
+
+        if "loras" in name or "controlnet" in name:
+            continue
+
+        # GGUF: skip GGUFParameter params
+        # if gguf and isinstance(param, GGUFParameter):
+        #     continue
+        
+        key = name.replace("_orig_mod.", "")
+        value=sd[key]
+
+        if gguf:
+            dtype_to_use = torch.float32 if "patch_embedding" in name or "motion_encoder" in name else base_dtype
+        else:
+            dtype_to_use = base_dtype if any(keyword in name for keyword in params_to_keep) else weight_dtype
+            dtype_to_use = weight_dtype if value.dtype == weight_dtype else dtype_to_use
+            scale_key = key.replace(".weight", ".scale_weight")
+            if scale_key in sd:
+                dtype_to_use = value.dtype
+            if "bias" in name or "img_emb" in name:
+                dtype_to_use = base_dtype
+            if "patch_embedding" in name or "motion_encoder" in name:
+                dtype_to_use = torch.float32
+            if "modulation" in name or "norm" in name:
+                dtype_to_use = value.dtype if value.dtype == torch.float32 else base_dtype
+
+        load_device = transformer_load_device
+        if block_swap_args is not None:
+            load_device = device
+            if block_idx is not None:
+                if block_idx >= len(transformer.blocks) - block_swap_args.get("blocks_to_swap", 0):
+                    load_device = offload_device
+            elif vace_block_idx is not None:
+                if vace_block_idx >= len(transformer.vace_blocks) - block_swap_args.get("vace_blocks_to_swap", 0):
+                    load_device = offload_device
+        # Set tensor to device
+        set_module_tensor_to_device(transformer, name, device=load_device, dtype=dtype_to_use, value=value)
+        cnt += 1
+        # if cnt % 100 == 0:
+        #     pbar.update(100)
+
+    #[print(name, param.device, param.dtype) for name, param in transformer.named_parameters()]
+
+    # pbar.update_absolute(0)
+    
 class MetaParameter(torch.nn.Parameter):
     def __new__(cls, dtype, quant_type=None):
         data = torch.empty(0, dtype=dtype)
@@ -64,7 +189,7 @@ def offload_transformer(transformer):
         if transformer.audio_model is not None and hasattr(block, 'audio_block'):
             block.audio_block = None
 
-    mm.soft_empty_cache()
+    # mm.soft_empty_cache()
     gc.collect()
 
 
@@ -105,7 +230,7 @@ class WanVideoSampler:
         experimental_args=None, sigmas=None, unianimate_poses=None, fantasytalking_embeds=None, uni3c_embeds=None, multitalk_embeds=None, freeinit_args=None, start_step=0, end_step=-1, add_noise_to_samples=False):
 
         patcher = model
-        model = patcher.model
+        # model = patcher.model
         transformer = model.diffusion_model
 
         dtype = model["base_dtype"]
@@ -117,7 +242,7 @@ class WanVideoSampler:
         vae = image_embeds.get("vae", None)
         tiled_vae = image_embeds.get("tiled_vae", False)
 
-        transformer_options = patcher.model_options.get("transformer_options", None)
+        transformer_options = model["transformer_options"]
         merge_loras = transformer_options["merge_loras"]
 
         block_swap_args = transformer_options.get("block_swap_args", None)
@@ -133,8 +258,8 @@ class WanVideoSampler:
         is_5b = transformer.out_dim == 48
         vae_upscale_factor = 16 if is_5b else 8
 
-        if patcher.model["sd"] is not None and gguf_reader is None:
-            load_weights(patcher.model.diffusion_model, patcher.model["sd"], weight_dtype, base_dtype=dtype, transformer_load_device=device, 
+        if model["sd"] is not None and gguf_reader is None:
+            load_weights(model.diffusion_model, model["sd"], weight_dtype, base_dtype=dtype, transformer_load_device=device, 
                          block_swap_args=block_swap_args, compile_args=model["compile_args"])
 
         if gguf_reader is not None: #handle GGUF
@@ -315,8 +440,8 @@ class WanVideoSampler:
         qwenvl_embeds_pos = image_embeds.get("qwenvl_embeds_pos", None)
         qwenvl_embeds_neg = image_embeds.get("qwenvl_embeds_neg", None)
 
-        mm.unload_all_models()
-        mm.soft_empty_cache()
+        # mm.unload_all_models()
+        # mm.soft_empty_cache()
         gc.collect()
 
         #blockswap init
@@ -397,7 +522,7 @@ class WanVideoSampler:
             nonlocal audio_cfg_scale
 
             autocast_enabled = ("fp8" in model["quantization"] and not transformer.patched_linear)
-            with torch.autocast(device_type=mm.get_autocast_device(device), dtype=dtype) if autocast_enabled else nullcontext():
+            with torch.autocast(device_type=device.type, dtype=dtype) if autocast_enabled else nullcontext():
 
                 if use_cfg_zero_star and (idx <= zero_star_steps) and use_zero_init:
                     return z*0, None
@@ -623,7 +748,7 @@ class WanVideoSampler:
         masks = None
 
         #clear memory before sampling
-        mm.soft_empty_cache()
+        # mm.soft_empty_cache()
         gc.collect()
         try:
             torch.cuda.reset_peak_memory_stats(device)
@@ -819,7 +944,7 @@ class WanVideoSampler:
                                 msk = torch.zeros(4, latent_frame_num, lat_h, lat_w, device=device, dtype=dtype)
                                 msk[:, :1] = 1
                                 y = torch.cat([msk, y]) # 4+C T H W
-                                mm.soft_empty_cache()
+                                # mm.soft_empty_cache()
                             else:
                                 y = None
                                 latent_motion_frames = noise[:, :1]
@@ -852,9 +977,9 @@ class WanVideoSampler:
                             if offloaded:
                                 # Load weights
                                 if transformer.patched_linear and gguf_reader is None:
-                                    load_weights(patcher.model.diffusion_model, patcher.model["sd"], weight_dtype, base_dtype=dtype, transformer_load_device=device, block_swap_args=block_swap_args)
+                                    load_weights(model.diffusion_model, model["sd"], weight_dtype, base_dtype=dtype, transformer_load_device=device, block_swap_args=block_swap_args)
                                 elif gguf_reader is not None: #handle GGUF
-                                    load_weights(transformer, patcher.model["sd"], base_dtype=dtype, transformer_load_device=device, patcher=patcher, gguf=True, reader=gguf_reader, block_swap_args=block_swap_args)
+                                    load_weights(transformer, model["sd"], base_dtype=dtype, transformer_load_device=device, patcher=patcher, gguf=True, reader=gguf_reader, block_swap_args=block_swap_args)
                                 #blockswap init
                                 init_blockswap(transformer, block_swap_args, model)
 
@@ -871,7 +996,7 @@ class WanVideoSampler:
                            
                             partial_fantasy_portrait_input = None
 
-                            mm.soft_empty_cache()
+                            # mm.soft_empty_cache()
                             gc.collect()
                             # sampling loop
                             sampling_pbar = tqdm(total=len(timesteps)-1, desc=f"Sampling audio indices {audio_start_idx}-{audio_end_idx}", position=0, leave=True)

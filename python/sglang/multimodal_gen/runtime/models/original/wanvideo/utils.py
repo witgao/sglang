@@ -7,9 +7,9 @@ from pathlib import Path
 import os
 import types, collections
 from sglang.comfy.utils import ProgressBar, copy_to_param, set_attr_param
-from sglang.comfy.model_patcher import get_key_weight, string_to_seed
-from sglang.comfy.lora import calculate_weight
-from sglang.comfy.model_management import cast_to_device
+# from sglang.comfy.model_patcher import get_key_weight, string_to_seed
+# from sglang.comfy.lora import calculate_weight
+# from sglang.comfy.model_management import cast_to_device
 # from comfy.float import stochastic_rounding
 import sglang.comfy.folder_paths
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')

@@ -18,7 +18,7 @@ __all__ = [
 from accelerate import init_empty_weights
 from accelerate.utils import set_module_tensor_to_device
 
-import sglang.comfy.model_management as mm
+# import sglang.comfy.model_management as mm
 
 def pos_interpolate(pos, seq_len):
     if pos.size(1) == seq_len:

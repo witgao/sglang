@@ -18,9 +18,11 @@ import math
 from tqdm import tqdm
 import logging
 import os
-import sglang.comfy.model_management as mm
+# import sglang.comfy.model_management as mm
 import sglang.comfy
-from sglang.comfy.sd import load_lora_for_models
+# from sglang.comfy.sd import load_lora_for_models
+import sglang.comfy as comfy
+
 from .wanvideo.custom_linear import _replace_linear
 from .wanvideo.utils import set_module_tensor_to_device
 from .wanvideo.wanvideo.modules.model import WanModel, LoRALinearLayer
@@ -28,8 +30,8 @@ from .wanvideo.utils import apply_lora
 
 
 
-device = mm.get_torch_device()
-offload_device = mm.unet_offload_device()
+device = torch.device(torch.cuda.current_device())
+offload_device = torch.device("cpu")
 
 class WanVideoLoraSelect:
 
@@ -70,17 +72,76 @@ class WanVideoLoraSelect:
 
         loras_list.append(lora)
         return (loras_list,)
-    
-class WanVideoModel(sglang.comfy.model_base.BaseModel):
+
+from sglang.comfy.model_base import BaseModel
+
+
+
+
+class AutoPatcherEjector:
+    def __init__(self, model: 'WanVideoModel', skip_and_inject_on_exit_only=False):
+        self.model = model
+        self.was_injected = False
+        self.prev_skip_injection = False
+        self.skip_and_inject_on_exit_only = skip_and_inject_on_exit_only
+
+    def __enter__(self):
+        pass
+        # self.was_injected = False
+        # self.prev_skip_injection = self.model.skip_injection
+        # if self.skip_and_inject_on_exit_only:
+        #     self.model.skip_injection = True
+        # if self.model.is_injected:
+        #     self.model.eject_model()
+        #     self.was_injected = True
+
+    def __exit__(self, *args):
+        pass
+        # if self.skip_and_inject_on_exit_only:
+        #     self.model.skip_injection = self.prev_skip_injection
+        #     self.model.inject_model()
+        # if self.was_injected and not self.model.skip_injection:
+        #     self.model.inject_model()
+        # self.model.skip_injection = self.prev_skip_injection
+        
+class WanVideoModel(BaseModel):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.pipeline = {}
+        self.patches = {}
 
     def __getitem__(self, k):
         return self.pipeline[k]
 
     def __setitem__(self, k, v):
         self.pipeline[k] = v
+    
+    def use_ejected(self, skip_and_inject_on_exit_only=False):
+        return AutoPatcherEjector(self, skip_and_inject_on_exit_only=skip_and_inject_on_exit_only)
+    
+    def add_patches(self, patches, strength_patch=1.0, strength_model=1.0):
+        with self.use_ejected():
+            p = set()
+            model_sd = self.state_dict()
+            for k in patches:
+                offset = None
+                function = None
+                if isinstance(k, str):
+                    key = k
+                else:
+                    offset = k[1]
+                    key = k[0]
+                    if len(k) > 2:
+                        function = k[2]
+
+                if key in model_sd:
+                    p.add(k)
+                    current_patches = self.patches.get(key, [])
+                    current_patches.append((strength_patch, patches[k], strength_model, offset, function))
+                    self.patches[key] = current_patches
+
+            # self.patches_uuid = uuid.uuid4()
+            return list(p)
 
 try:
     from sglang.comfy.latent_formats import Wan21, Wan22
@@ -294,48 +355,7 @@ def filter_state_dict_by_blocks(state_dict, blocks_mapping, layer_filter=[]):
     #save_file(filtered_dict, "filtered_state_dict_2.safetensors")
 
     return filtered_dict
-def add_lora_weights(patcher, lora, base_dtype, merge_loras=False):
-    unianimate_sd = None
-    control_lora=False
-    #spacepxl's control LoRA patch
-    for l in lora:
-        logging.info(f"Loading LoRA: {l['name']} with strength: {l['strength']}")
-        lora_path = l["path"]
-        lora_strength = l["strength"]
-        if isinstance(lora_strength, list):
-            if merge_loras:
-                raise ValueError("LoRA strength should be a single value when merge_loras=True")
-            patcher.model.diffusion_model.lora_scheduling_enabled = True
-        if lora_strength == 0:
-            logging.warning(f"LoRA {lora_path} has strength 0, skipping...")
-            continue
-        lora_sd = ModelUtils.load_torch_file(lora_path, safe_load=True)
-        if "dwpose_embedding.0.weight" in lora_sd: #unianimate
-            from .wanvideo.unianimate.nodes import update_transformer
-            logging.info("Unianimate LoRA detected, patching model...")
-            patcher.model.diffusion_model, unianimate_sd = update_transformer(patcher.model.diffusion_model, lora_sd)
 
-        lora_sd = standardize_lora_key_format(lora_sd)
-
-        if l["blocks"]:
-            lora_sd = filter_state_dict_by_blocks(lora_sd, l["blocks"], l.get("layer_filter", []))
-
-        # Filter out any LoRA keys containing 'img' if the base model state_dict has no 'img' keys
-        #if not any('img' in k for k in sd.keys()):
-        #    lora_sd = {k: v for k, v in lora_sd.items() if 'img' not in k}
-        
-        if "diffusion_model.patch_embedding.lora_A.weight" in lora_sd:
-            control_lora = True
-        #stand-in LoRA patch
-        if "diffusion_model.blocks.0.self_attn.q_loras.down.weight" in lora_sd:
-            patch_stand_in_lora(patcher.model.diffusion_model, lora_sd, device, base_dtype, lora_strength)
-        # normal LoRA patch
-        else:
-            patcher, _ = load_lora_for_models(patcher, None, lora_sd, lora_strength, 0)
-        
-        del lora_sd
-    return patcher, control_lora, unianimate_sd
-   
 def rename_fuser_block(name):
     # map fuser blocks to main blocks
     new_name = name
@@ -509,7 +529,332 @@ def patch_stand_in_lora(transformer, lora_sd, transformer_load_device, base_dtyp
             if "lora" in name:
                 param.data.copy_(lora_sd["diffusion_model." + name].to(param.device, dtype=param.dtype))
 
-def add_lora_weights(patcher, lora, base_dtype, merge_loras=False):
+def model_lora_keys_unet(model, key_map={}):
+    sd = model.state_dict()
+    sdk = sd.keys()
+
+    for k in sdk:
+        if k.startswith("diffusion_model."):
+            if k.endswith(".weight"):
+                key_lora = k[len("diffusion_model."):-len(".weight")].replace(".", "_")
+                key_map["lora_unet_{}".format(key_lora)] = k
+                key_map["{}".format(k[:-len(".weight")])] = k #generic lora format without any weird key names
+            else:
+                key_map["{}".format(k)] = k #generic lora format for not .weight without any weird key names
+
+    return key_map
+
+# import sglang.comfy.weight_adapter as weight_adapter
+from typing import Optional
+
+class WeightAdapterTrainBase(nn.Module):
+    # We follow the scheme of PR #7032
+    def __init__(self):
+        super().__init__()
+
+    def __call__(self, w):
+        """
+        w: The original weight tensor to be modified.
+        """
+        raise NotImplementedError
+
+    def passive_memory_usage(self):
+        raise NotImplementedError("passive_memory_usage is not implemented")
+
+    def move_to(self, device):
+        self.to(device)
+        return self.passive_memory_usage()
+
+class WeightAdapterBase:
+    name: str
+    loaded_keys: set[str]
+    weights: list[torch.Tensor]
+
+    @classmethod
+    def load(cls, x: str, lora: dict[str, torch.Tensor], alpha: float, dora_scale: torch.Tensor) -> Optional["WeightAdapterBase"]:
+        raise NotImplementedError
+
+    def to_train(self) -> "WeightAdapterTrainBase":
+        raise NotImplementedError
+
+    @classmethod
+    def create_train(cls, weight, *args) -> "WeightAdapterTrainBase":
+        """
+        weight: The original weight tensor to be modified.
+        *args: Additional arguments for configuration, such as rank, alpha etc.
+        """
+        raise NotImplementedError
+
+    def calculate_weight(
+        self,
+        weight,
+        key,
+        strength,
+        strength_model,
+        offset,
+        function,
+        intermediate_dtype=torch.float32,
+        original_weight=None,
+    ):
+        raise NotImplementedError
+
+def tucker_weight_from_conv(up, down, mid):
+    up = up.reshape(up.size(0), up.size(1))
+    down = down.reshape(down.size(0), down.size(1))
+    return torch.einsum("m n ..., i m, n j -> i j ...", mid, up, down)
+
+def pad_tensor_to_shape(tensor: torch.Tensor, new_shape: list[int]) -> torch.Tensor:
+    """
+    Pad a tensor to a new shape with zeros.
+
+    Args:
+        tensor (torch.Tensor): The original tensor to be padded.
+        new_shape (List[int]): The desired shape of the padded tensor.
+
+    Returns:
+        torch.Tensor: A new tensor padded with zeros to the specified shape.
+
+    Note:
+        If the new shape is smaller than the original tensor in any dimension,
+        the original tensor will be truncated in that dimension.
+    """
+    if any([new_shape[i] < tensor.shape[i] for i in range(len(new_shape))]):
+        raise ValueError("The new shape must be larger than the original tensor in all dimensions")
+
+    if len(new_shape) != len(tensor.shape):
+        raise ValueError("The new shape must have the same number of dimensions as the original tensor")
+
+    # Create a new tensor filled with zeros
+    padded_tensor = torch.zeros(new_shape, dtype=tensor.dtype, device=tensor.device)
+
+    # Create slicing tuples for both tensors
+    orig_slices = tuple(slice(0, dim) for dim in tensor.shape)
+    new_slices = tuple(slice(0, dim) for dim in tensor.shape)
+
+    # Copy the original tensor into the new tensor
+    padded_tensor[new_slices] = tensor[orig_slices]
+
+    return padded_tensor
+
+class LoRAAdapter(WeightAdapterBase):
+    name = "lora"
+
+    def __init__(self, loaded_keys, weights):
+        self.loaded_keys = loaded_keys
+        self.weights = weights
+
+    @classmethod
+    def load(
+        cls,
+        x: str,
+        lora: dict[str, torch.Tensor],
+        alpha: float,
+        dora_scale: torch.Tensor,
+        loaded_keys: set[str] = None,
+    ) -> Optional["LoRAAdapter"]:
+        if loaded_keys is None:
+            loaded_keys = set()
+
+        reshape_name = "{}.reshape_weight".format(x)
+        regular_lora = "{}.lora_up.weight".format(x)
+        diffusers_lora = "{}_lora.up.weight".format(x)
+        diffusers2_lora = "{}.lora_B.weight".format(x)
+        diffusers3_lora = "{}.lora.up.weight".format(x)
+        mochi_lora = "{}.lora_B".format(x)
+        transformers_lora = "{}.lora_linear_layer.up.weight".format(x)
+        qwen_default_lora = "{}.lora_B.default.weight".format(x)
+        A_name = None
+
+        if regular_lora in lora.keys():
+            A_name = regular_lora
+            B_name = "{}.lora_down.weight".format(x)
+            mid_name = "{}.lora_mid.weight".format(x)
+        elif diffusers_lora in lora.keys():
+            A_name = diffusers_lora
+            B_name = "{}_lora.down.weight".format(x)
+            mid_name = None
+        elif diffusers2_lora in lora.keys():
+            A_name = diffusers2_lora
+            B_name = "{}.lora_A.weight".format(x)
+            mid_name = None
+        elif diffusers3_lora in lora.keys():
+            A_name = diffusers3_lora
+            B_name = "{}.lora.down.weight".format(x)
+            mid_name = None
+        elif mochi_lora in lora.keys():
+            A_name = mochi_lora
+            B_name = "{}.lora_A".format(x)
+            mid_name = None
+        elif transformers_lora in lora.keys():
+            A_name = transformers_lora
+            B_name = "{}.lora_linear_layer.down.weight".format(x)
+            mid_name = None
+        elif qwen_default_lora in lora.keys():
+            A_name = qwen_default_lora
+            B_name = "{}.lora_A.default.weight".format(x)
+            mid_name = None
+
+        if A_name is not None:
+            mid = None
+            if mid_name is not None and mid_name in lora.keys():
+                mid = lora[mid_name]
+                loaded_keys.add(mid_name)
+            reshape = None
+            if reshape_name in lora.keys():
+                try:
+                    reshape = lora[reshape_name].tolist()
+                    loaded_keys.add(reshape_name)
+                except:
+                    pass
+            weights = (lora[A_name], lora[B_name], alpha, mid, dora_scale, reshape)
+            loaded_keys.add(A_name)
+            loaded_keys.add(B_name)
+            return cls(loaded_keys, weights)
+        else:
+            return None
+
+    def calculate_weight(
+        self,
+        weight,
+        key,
+        strength,
+        strength_model,
+        offset,
+        function,
+        intermediate_dtype=torch.float32,
+        original_weight=None,
+    ):
+        v = self.weights
+        mat1 = comfy.model_management.cast_to_device(
+            v[0], weight.device, intermediate_dtype
+        )
+        mat2 = comfy.model_management.cast_to_device(
+            v[1], weight.device, intermediate_dtype
+        )
+        dora_scale = v[4]
+        reshape = v[5]
+
+        if reshape is not None:
+            weight = pad_tensor_to_shape(weight, reshape)
+
+        if v[2] is not None:
+            alpha = v[2] / mat2.shape[0]
+        else:
+            alpha = 1.0
+
+        if v[3] is not None:
+            # locon mid weights, hopefully the math is fine because I didn't properly test it
+            mat3 = comfy.model_management.cast_to_device(
+                v[3], weight.device, intermediate_dtype
+            )
+            final_shape = [mat2.shape[1], mat2.shape[0], mat3.shape[2], mat3.shape[3]]
+            mat2 = (
+                torch.mm(
+                    mat2.transpose(0, 1).flatten(start_dim=1),
+                    mat3.transpose(0, 1).flatten(start_dim=1),
+                )
+                .reshape(final_shape)
+                .transpose(0, 1)
+            )
+        try:
+            lora_diff = torch.mm(
+                mat1.flatten(start_dim=1), mat2.flatten(start_dim=1)
+            ).reshape(weight.shape)
+            if dora_scale is not None:
+                weight = weight_decompose(
+                    dora_scale,
+                    weight,
+                    lora_diff,
+                    alpha,
+                    strength,
+                    intermediate_dtype,
+                    function,
+                )
+            else:
+                weight += function(((strength * alpha) * lora_diff).type(weight.dtype))
+        except Exception as e:
+            logging.error("ERROR {} {} {}".format(self.name, key, e))
+        return weight
+
+
+adapters: list[type[WeightAdapterBase]] = [
+    LoRAAdapter,
+]
+
+def load_lora(lora, to_load, log_missing=True):
+    patch_dict = {}
+    loaded_keys = set()
+    for x in to_load:
+        alpha_name = "{}.alpha".format(x)
+        alpha = None
+        if alpha_name in lora.keys():
+            alpha = lora[alpha_name].item()
+            loaded_keys.add(alpha_name)
+
+        dora_scale_name = "{}.dora_scale".format(x)
+        dora_scale = None
+        if dora_scale_name in lora.keys():
+            dora_scale = lora[dora_scale_name]
+            loaded_keys.add(dora_scale_name)
+
+        for adapter_cls in adapters:
+            adapter = adapter_cls.load(x, lora, alpha, dora_scale, loaded_keys)
+            if adapter is not None:
+                patch_dict[to_load[x]] = adapter
+                loaded_keys.update(adapter.loaded_keys)
+                continue
+
+        w_norm_name = "{}.w_norm".format(x)
+        b_norm_name = "{}.b_norm".format(x)
+        w_norm = lora.get(w_norm_name, None)
+        b_norm = lora.get(b_norm_name, None)
+
+        if w_norm is not None:
+            loaded_keys.add(w_norm_name)
+            patch_dict[to_load[x]] = ("diff", (w_norm,))
+            if b_norm is not None:
+                loaded_keys.add(b_norm_name)
+                patch_dict["{}.bias".format(to_load[x][:-len(".weight")])] = ("diff", (b_norm,))
+
+        diff_name = "{}.diff".format(x)
+        diff_weight = lora.get(diff_name, None)
+        if diff_weight is not None:
+            patch_dict[to_load[x]] = ("diff", (diff_weight,))
+            loaded_keys.add(diff_name)
+
+        diff_bias_name = "{}.diff_b".format(x)
+        diff_bias = lora.get(diff_bias_name, None)
+        if diff_bias is not None:
+            patch_dict["{}.bias".format(to_load[x][:-len(".weight")])] = ("diff", (diff_bias,))
+            loaded_keys.add(diff_bias_name)
+
+        set_weight_name = "{}.set_weight".format(x)
+        set_weight = lora.get(set_weight_name, None)
+        if set_weight is not None:
+            patch_dict[to_load[x]] = ("set", (set_weight,))
+            loaded_keys.add(set_weight_name)
+
+    if log_missing:
+        for x in lora.keys():
+            if x not in loaded_keys:
+                logging.warning("lora key not loaded: {}".format(x))
+
+    return patch_dict
+
+def load_lora_for_models(model, clip, lora, strength_model, strength_clip):
+    key_map = {}
+    if model is not None:
+        key_map = model_lora_keys_unet(model, key_map)
+    loaded = load_lora(lora, key_map)
+    if model is not None:
+        # new_modelpatcher = model.clone()
+        k = model.add_patches(loaded, strength_model)
+   
+    new_clip = None
+
+    return (model, new_clip)
+
+def add_lora_weights(comfy_model, lora, base_dtype, merge_loras=False):
     unianimate_sd = None
     control_lora=False
     #spacepxl's control LoRA patch
@@ -517,40 +862,18 @@ def add_lora_weights(patcher, lora, base_dtype, merge_loras=False):
         logging.info(f"Loading LoRA: {l['name']} with strength: {l['strength']}")
         lora_path = l["path"]
         lora_strength = l["strength"]
-        if isinstance(lora_strength, list):
-            if merge_loras:
-                raise ValueError("LoRA strength should be a single value when merge_loras=True")
-            patcher.model.diffusion_model.lora_scheduling_enabled = True
-        if lora_strength == 0:
-            logging.warning(f"LoRA {lora_path} has strength 0, skipping...")
-            continue
+       
         lora_sd = ModelUtils.load_torch_file(lora_path, safe_load=True)
-        # if "dwpose_embedding.0.weight" in lora_sd: #unianimate
-        #     from .wanvideo.unianimate.nodes import update_transformer
-        #     logging.info("Unianimate LoRA detected, patching model...")
-        #     patcher.model.diffusion_model, unianimate_sd = update_transformer(patcher.model.diffusion_model, lora_sd)
-
-        lora_sd = standardize_lora_key_format(lora_sd)
-
-        if l["blocks"]:
-            lora_sd = filter_state_dict_by_blocks(lora_sd, l["blocks"], l.get("layer_filter", []))
-
-        # Filter out any LoRA keys containing 'img' if the base model state_dict has no 'img' keys
-        #if not any('img' in k for k in sd.keys()):
-        #    lora_sd = {k: v for k, v in lora_sd.items() if 'img' not in k}
-        
-        if "diffusion_model.patch_embedding.lora_A.weight" in lora_sd:
-            control_lora = True
+       
         #stand-in LoRA patch
         if "diffusion_model.blocks.0.self_attn.q_loras.down.weight" in lora_sd:
             pass
-            # patch_stand_in_lora(patcher.model.diffusion_model, lora_sd, device, base_dtype, lora_strength)
         # normal LoRA patch
         else:
-            patcher, _ = load_lora_for_models(patcher, None, lora_sd, lora_strength, 0)
+            comfy_model, _ = load_lora_for_models(comfy_model, None, lora_sd, lora_strength, 0)
         
         del lora_sd
-    return patcher, control_lora, unianimate_sd
+    return comfy_model, control_lora, unianimate_sd
 
 class OriginalWanTransformerModel(FromOriginalModelMixin):
 
@@ -599,9 +922,9 @@ class OriginalWanTransformerModel(FromOriginalModelMixin):
             lora_low_mem_load = any(l.get("low_mem_load", False) for l in lora)
 
         transformer = None
-        mm.unload_all_models()
-        mm.cleanup_models()
-        mm.soft_empty_cache()
+        # mm.unload_all_models()
+        # mm.cleanup_models()
+        # mm.soft_empty_cache()
 
         if "sage" in attention_mode:
             try:
@@ -948,8 +1271,8 @@ class OriginalWanTransformerModel(FromOriginalModelMixin):
 
         comfy_model.diffusion_model = transformer
         comfy_model.load_device = transformer_load_device
-        patcher = sglang.comfy.model_patcher.ModelPatcher(comfy_model, device, offload_device)
-        patcher.model.is_patched = False
+        # patcher = sglang.comfy.model_patcher.ModelPatcher(comfy_model, device, offload_device)
+        comfy_model.is_patched = False
         
         scale_weights = {}
         if "fp8" in quantization:
@@ -972,7 +1295,7 @@ class OriginalWanTransformerModel(FromOriginalModelMixin):
             logging.warning("Control-LoRA patching is only supported with merge_loras=True")
 
         if lora is not None:
-            patcher, control_lora, unianimate_sd = add_lora_weights(patcher, lora, base_dtype, merge_loras=merge_loras)
+            comfy_model, control_lora, unianimate_sd = add_lora_weights(comfy_model, lora, base_dtype, merge_loras=merge_loras)
             if unianimate_sd is not None:
                 logging.info("Merging UniAnimate weights to the model...")
                 sd.update(unianimate_sd)
@@ -985,29 +1308,27 @@ class OriginalWanTransformerModel(FromOriginalModelMixin):
                 transformer = _replace_linear(transformer, base_dtype, sd, scale_weights=scale_weights, compile_args=compile_args)
                 transformer.patched_linear = True
 
-        patcher.model["base_dtype"] = base_dtype
-        patcher.model["weight_dtype"] = weight_dtype
-        patcher.model["base_path"] = model_path
-        patcher.model["model_name"] = model
-        patcher.model["quantization"] = quantization
-        patcher.model["auto_cpu_offload"] = True if vram_management_args is not None else False
-        patcher.model["control_lora"] = control_lora
-        patcher.model["compile_args"] = compile_args
-        patcher.model["gguf_reader"] = gguf_reader
-        patcher.model["fp8_matmul"] = "fast" in quantization
-        patcher.model["scale_weights"] = scale_weights
-        patcher.model["sd"] = sd
-        patcher.model["lora"] = lora
+        comfy_model["base_dtype"] = base_dtype
+        comfy_model["weight_dtype"] = weight_dtype
+        comfy_model["base_path"] = model_path
+        comfy_model["model_name"] = model
+        comfy_model["quantization"] = quantization
+        comfy_model["auto_cpu_offload"] = True if vram_management_args is not None else False
+        comfy_model["control_lora"] = control_lora
+        comfy_model["compile_args"] = compile_args
+        comfy_model["gguf_reader"] = gguf_reader
+        comfy_model["fp8_matmul"] = "fast" in quantization
+        comfy_model["scale_weights"] = scale_weights
+        comfy_model["sd"] = sd
+        comfy_model["lora"] = lora
+        comfy_model["transformer_options"] = {}
+        comfy_model["transformer_options"]["block_swap_args"] = block_swap_args
+        comfy_model["transformer_options"]["merge_loras"] = merge_loras
 
-        if 'transformer_options' not in patcher.model_options:
-            patcher.model_options['transformer_options'] = {}
-        patcher.model_options["transformer_options"]["block_swap_args"] = block_swap_args
-        patcher.model_options["transformer_options"]["merge_loras"] = merge_loras
-
-        for model in mm.current_loaded_models:
-            if model._model() == patcher:
-                mm.current_loaded_models.remove(model)
-        return patcher
+        # for model in mm.current_loaded_models:
+        #     if model._model() == patcher:
+        #         mm.current_loaded_models.remove(model)
+        return comfy_model
 
 
 EntryClass = [OriginalWanTransformerModel]

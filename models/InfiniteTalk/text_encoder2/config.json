@@ -1,4 +1,0 @@
-{
-    "_class_name":"OriginalUMT5Model",
-    "pretrained_model_name_or_path":"umt5-xxl-enc-bf16.safetensors"
-}

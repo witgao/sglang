@@ -18,7 +18,7 @@
 
 import torch
 import logging
-import sglang.comfy.model_management
+# import sglang.comfy.model_management
 # from comfy.cli_args import args, PerformanceFeature
 # import comfy.float
 import sglang.comfy.rmsnorm
@@ -35,26 +35,26 @@ def scaled_dot_product_attention(q, k, v, *args, **kwargs):
     return torch.nn.functional.scaled_dot_product_attention(q, k, v, *args, **kwargs)
 
 
-try:
-    if torch.cuda.is_available() and sglang.comfy.model_management.WINDOWS:
-        from torch.nn.attention import SDPBackend, sdpa_kernel
-        import inspect
-        if "set_priority" in inspect.signature(sdpa_kernel).parameters:
-            SDPA_BACKEND_PRIORITY = [
-                SDPBackend.FLASH_ATTENTION,
-                SDPBackend.EFFICIENT_ATTENTION,
-                SDPBackend.MATH,
-            ]
+# try:
+#     if torch.cuda.is_available() and sglang.comfy.model_management.WINDOWS:
+#         from torch.nn.attention import SDPBackend, sdpa_kernel
+#         import inspect
+#         if "set_priority" in inspect.signature(sdpa_kernel).parameters:
+#             SDPA_BACKEND_PRIORITY = [
+#                 SDPBackend.FLASH_ATTENTION,
+#                 SDPBackend.EFFICIENT_ATTENTION,
+#                 SDPBackend.MATH,
+#             ]
 
-            SDPA_BACKEND_PRIORITY.insert(0, SDPBackend.CUDNN_ATTENTION)
+#             SDPA_BACKEND_PRIORITY.insert(0, SDPBackend.CUDNN_ATTENTION)
 
-            def scaled_dot_product_attention(q, k, v, *args, **kwargs):
-                with sdpa_kernel(SDPA_BACKEND_PRIORITY, set_priority=True):
-                    return torch.nn.functional.scaled_dot_product_attention(q, k, v, *args, **kwargs)
-        else:
-            logging.warning("Torch version too old to set sdpa backend priority.")
-except (ModuleNotFoundError, TypeError):
-    logging.warning("Could not set sdpa backend priority.")
+#             def scaled_dot_product_attention(q, k, v, *args, **kwargs):
+#                 with sdpa_kernel(SDPA_BACKEND_PRIORITY, set_priority=True):
+#                     return torch.nn.functional.scaled_dot_product_attention(q, k, v, *args, **kwargs)
+#         else:
+#             logging.warning("Torch version too old to set sdpa backend priority.")
+# except (ModuleNotFoundError, TypeError):
+#     logging.warning("Could not set sdpa backend priority.")
 
 NVIDIA_MEMORY_CONV_BUG_WORKAROUND = False
 try:
@@ -66,7 +66,26 @@ try:
 except:
     pass
 
-cast_to = sglang.comfy.model_management.cast_to #TODO: remove once no more references
+def cast_to(weight, dtype=None, device=None, non_blocking=False, copy=False, stream=None):
+    if device is None or weight.device == device:
+        if not copy:
+            if dtype is None or weight.dtype == dtype:
+                return weight
+        if stream is not None:
+            with stream:
+                return weight.to(dtype=dtype, copy=copy)
+        return weight.to(dtype=dtype, copy=copy)
+
+    if stream is not None:
+        with stream:
+            r = torch.empty_like(weight, dtype=dtype, device=device)
+            r.copy_(weight, non_blocking=non_blocking)
+    else:
+        r = torch.empty_like(weight, dtype=dtype, device=device)
+        r.copy_(weight, non_blocking=non_blocking)
+    return r
+
+# cast_to = sglang.comfy.model_management.cast_to #TODO: remove once no more references
 
 def cast_to_input(weight, input, non_blocking=False, copy=True):
     return sglang.comfy.model_management.cast_to(weight, input.dtype, input.device, non_blocking=non_blocking, copy=copy)

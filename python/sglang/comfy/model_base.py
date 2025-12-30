@@ -48,7 +48,7 @@ import logging
 # import comfy.ldm.omnigen.omnigen2
 # import comfy.ldm.qwen_image.model
 import sglang.comfy as comfy
-import sglang.comfy.model_management
+# import sglang.comfy.model_management
 # import comfy.patcher_extension
 # import comfy.conds
 import sglang.comfy.ops

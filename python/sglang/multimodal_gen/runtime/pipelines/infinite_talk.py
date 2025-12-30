@@ -20,8 +20,6 @@ from sglang.multimodal_gen.runtime.pipelines.stages import (
     InputStage,
     OutputStage,
     AudioEncodeStage,
-    ImageEncodeStage,
-    TextEncodeStage,
     VAEEncoderStage,
     VAEDecoderStage,
     WanSamplerStage

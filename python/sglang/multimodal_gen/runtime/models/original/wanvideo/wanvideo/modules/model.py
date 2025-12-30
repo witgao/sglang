@@ -24,7 +24,7 @@ from ...multitalk.multitalk import get_attn_map_with_target
 
 # from ...MTV.mtv import apply_rotary_emb
 
-from sglang.comfy import model_management as mm
+# from sglang.comfy import model_management as mm
 
 __all__ = ['WanModel']
 
@@ -186,10 +186,10 @@ def apply_rope_comfy_chunked(xq, xk, freqs_cis, num_chunks=4):
 
 def rope_riflex(pos, dim, i, theta, L_test, k, ntk_factor=1.0):
     assert dim % 2 == 0
-    if mm.is_device_mps(pos.device) or mm.is_intel_xpu() or mm.is_directml_enabled():
-        device = torch.device("cpu")
-    else:
-        device = pos.device
+    # if mm.is_device_mps(pos.device) or mm.is_intel_xpu() or mm.is_directml_enabled():
+    #     device = torch.device("cpu")
+    # else:
+    device = pos.device
 
     if ntk_factor != 1.0:
         theta *= ntk_factor
@@ -264,7 +264,7 @@ def rope_params(max_seq_len, dim, theta=10000, L_test=25, k=0, freqs_scaling=1.0
     freqs = torch.polar(torch.ones_like(freqs), freqs)
     return freqs
 
-@torch.autocast(device_type=mm.get_autocast_device(mm.get_torch_device()), enabled=False)
+@torch.autocast(device_type=torch.device(torch.cuda.current_device()).type, enabled=False)
 @torch.compiler.disable()
 def rope_apply(x, grid_sizes, freqs, reverse_time=False):
     x_ndim = grid_sizes.shape[-1]
@@ -2902,7 +2902,7 @@ class WanModel(torch.nn.Module):
                 lynx_ref_buffer = {}
 
             for b, block in enumerate(self.blocks):
-                mm.throw_exception_if_processing_interrupted()
+                # mm.throw_exception_if_processing_interrupted()
                 block_idx = f"{b:02d}"
                 if lynx_ref_buffer is not None and not lynx_ref_feature_extractor:
                     lynx_ref_feature = lynx_ref_buffer.get(block_idx, None)
