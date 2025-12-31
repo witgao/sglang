@@ -26,7 +26,7 @@ import sglang.comfy as comfy
 from .wanvideo.custom_linear import _replace_linear
 from .wanvideo.utils import set_module_tensor_to_device
 from .wanvideo.wanvideo.modules.model import WanModel, LoRALinearLayer
-from .wanvideo.utils import apply_lora
+from .wanvideo.utils import apply_lora,compile_model
 
 
 
@@ -40,23 +40,8 @@ class WanVideoLoraSelect:
             low_mem_load = False  # Unmerged LoRAs don't need low_mem_load
         loras_list = []
 
-        if not isinstance(strength, list):
-            strength = round(strength, 4)
-            if strength == 0.0:
-                if prev_lora is not None:
-                    loras_list.extend(prev_lora)
-                return (loras_list,)
 
         lora_path = lora
-
-        # Load metadata from the safetensors file
-        metadata = {}
-        try:
-            from safetensors.torch import safe_open
-            with safe_open(lora_path, framework="pt", device="cpu") as f:
-                metadata = f.metadata()
-        except Exception as e:
-            logging.info(f"Could not load metadata from {lora}: {e}")
 
         lora = {
             "path": lora_path,
@@ -376,59 +361,6 @@ def load_weights(transformer, sd=None, weight_dtype=None, base_dtype=None,
     cnt = 0
     block_idx = vace_block_idx = None
 
-    if gguf:
-        pass
-        # logging.info("Using GGUF to load and assign model weights to device...")
-
-        # # Prepare sd from GGUF readers
-
-        # # handle possible non-GGUF weights
-        # extra_sd = {}
-        # for key, value in sd.items():
-        #     if value.device != torch.device("meta"):
-        #         extra_sd[key] = value
-
-        # sd = {}
-        # all_tensors = []
-        # for r in reader:
-        #     all_tensors.extend(r.tensors)
-        # for tensor in all_tensors:
-        #     name = rename_fuser_block(tensor.name)
-        #     if "glob" not in name and "audio_proj" in name:
-        #         name = name.replace("audio_proj", "multitalk_audio_proj")
-        #     load_device = device
-        #     if "vace_blocks." in name:
-        #         try:
-        #             vace_block_idx = int(name.split("vace_blocks.")[1].split(".")[0])
-        #         except Exception:
-        #             vace_block_idx = None
-        #     elif "blocks." in name and "face" not in name:
-        #         try:
-        #             block_idx = int(name.split("blocks.")[1].split(".")[0])
-        #         except Exception:
-        #             block_idx = None
-
-        #     if block_swap_args is not None:
-        #         if block_idx is not None:
-        #             if block_idx >= len(transformer.blocks) - block_swap_args.get("blocks_to_swap", 0):
-        #                 load_device = offload_device
-        #         elif vace_block_idx is not None:
-        #             if vace_block_idx >= len(transformer.vace_blocks) - block_swap_args.get("vace_blocks_to_swap", 0):
-        #                 load_device = offload_device
-                        
-        #     is_gguf_quant = tensor.tensor_type not in [GGMLQuantizationType.F32, GGMLQuantizationType.F16]
-        #     weights = torch.from_numpy(tensor.data.copy()).to(load_device)
-        #     sd[name] = GGUFParameter(weights, quant_type=tensor.tensor_type) if is_gguf_quant else weights
-        # sd.update(extra_sd)
-        # del all_tensors, extra_sd
-
-        # if not getattr(transformer, "gguf_patched", False):
-        #     transformer = _replace_with_gguf_linear(
-        #         transformer, base_dtype, sd, patches=patcher.patches, compile_args=compile_args
-        #     )
-        #     transformer.gguf_patched = True
-    else:
-        logging.info("Using accelerate to load and assign model weights to device...")
     named_params = transformer.named_parameters()
 
     for name, param in tqdm(named_params,
@@ -484,12 +416,6 @@ def load_weights(transformer, sd=None, weight_dtype=None, base_dtype=None,
         # Set tensor to device
         set_module_tensor_to_device(transformer, name, device=load_device, dtype=dtype_to_use, value=value)
         cnt += 1
-        # if cnt % 100 == 0:
-        #     pbar.update(100)
-
-    #[print(name, param.device, param.dtype) for name, param in transformer.named_parameters()]
-
-    # pbar.update_absolute(0)
 
 def patch_control_lora(transformer, device):
     logging.info("Control-LoRA detected, patching model...")
@@ -859,7 +785,6 @@ def add_lora_weights(comfy_model, lora, base_dtype, merge_loras=False):
     control_lora=False
     #spacepxl's control LoRA patch
     for l in lora:
-        logging.info(f"Loading LoRA: {l['name']} with strength: {l['strength']}")
         lora_path = l["path"]
         lora_strength = l["strength"]
        
@@ -877,15 +802,21 @@ def add_lora_weights(comfy_model, lora, base_dtype, merge_loras=False):
 
 class OriginalWanTransformerModel(FromOriginalModelMixin):
 
-    def __init__(
-        self
-    ):
+    def __init__(self):
         super().__init__()
 
     @classmethod
     def from_single_file(cls, model=None, **kwargs):
-        lora_select = WanVideoLoraSelect()
-        lora_result = lora_select.getlorapath(lora="/data/gaozhenyu/studio/ComfyUI/models/loras/lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors", strength=1.0, low_mem_load=False, merge_loras=False, unique_id=0)
+        loras_list = []
+        lora = {
+            "path": "/data/gaozhenyu/studio/ComfyUI/models/loras/lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors",
+            "strength": 1.0,
+            # "name": "lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16",
+            "low_mem_load": False,
+            "merge_loras": False,
+        }
+        loras_list.append(lora)
+    
         infinite_talk_model = OriginalInfiniteTalkModel.from_single_file("/data/gaozhenyu/studio/ComfyUI/models/diffusion_models/Wan2_1-InfiniteTalk-Single_fp8_e4m3fn_scaled_KJ.safetensors")
         base_precision = "fp16_fast"
         load_device = "offload_device"
@@ -901,37 +832,21 @@ class OriginalWanTransformerModel(FromOriginalModelMixin):
             "prefetch_blocks": 1,
             "block_swap_debug": False
         }
-        lora = lora_result[0]
+        lora = loras_list
         vram_management_args = None
-        extra_model = None
-        vace_model = None
-        fantasytalking_model = None
         multitalk_model = infinite_talk_model
-        fantasyportrait_model = None
         rms_norm_function = None
                   
         device = torch.device(torch.cuda.current_device())
         offload_device = torch.device("cpu")
 
-        assert not (vram_management_args is not None and block_swap_args is not None), "Can't use both block_swap_args and vram_management_args at the same time"
-        if vace_model is not None:
-            extra_model = vace_model
         lora_low_mem_load = merge_loras = False
         if lora is not None:
             merge_loras = any(l.get("merge_loras", True) for l in lora)
             lora_low_mem_load = any(l.get("low_mem_load", False) for l in lora)
 
         transformer = None
-        # mm.unload_all_models()
-        # mm.cleanup_models()
-        # mm.soft_empty_cache()
-
-        if "sage" in attention_mode:
-            try:
-                from sageattention import sageattn
-            except Exception as e:
-                raise ValueError(f"Can't import SageAttention: {str(e)}")
-
+     
         gguf = False
  
         transformer_load_device = device if load_device == "main_device" else offload_device
@@ -965,58 +880,10 @@ class OriginalWanTransformerModel(FromOriginalModelMixin):
             sd = {key.replace("video_model.", "", 1).replace("modulation.modulation", "modulation"): value for key, value in sd.items()}
         if any(key.startswith("audio_model.") for key in sd.keys()) and any(key.startswith("blocks.") for key in sd.keys()):
             extra_audio_model = True
-                
+            
 
-        is_wananimate = "pose_patch_embedding.weight" in sd
-        # rename WanAnimate face fuser block keys to insert into main blocks instead
-        if is_wananimate:
-            for key in list(sd.keys()):
-                new_key = rename_fuser_block(key)
-                if new_key != key:
-                    sd[new_key] = sd.pop(key)
-
-        is_scaled_fp8 = False
-
-        if quantization == "disabled":
-            for k, v in sd.items():
-                if isinstance(v, torch.Tensor):
-                    if v.dtype == torch.float8_e4m3fn:
-                        quantization = "fp8_e4m3fn"
-                        if "scaled_fp8" in sd:
-                            is_scaled_fp8 = True
-                            quantization = "fp8_e4m3fn_scaled"
-                        break
-                    elif v.dtype == torch.float8_e5m2:
-                        quantization = "fp8_e5m2"
-                        if "scaled_fp8" in sd:
-                            is_scaled_fp8 = True
-                            quantization = "fp8_e5m2_scaled"
-                        break
-
-        scale_weights = {}
-        if "fp8" in quantization:
-            for k, v in sd.items():
-                if k.endswith(".scale_weight"):
-                    is_scaled_fp8 = True
-                    break
-
-        if is_scaled_fp8 and "scaled" not in quantization:
-            quantization = quantization + "_scaled"
-
-        if torch.cuda.is_available():
-            #only warning for now
-            major, minor = torch.cuda.get_device_capability(device)
-            logging.info(f"CUDA Compute Capability: {major}.{minor}")
-            if compile_args is not None and "e4" in quantization and (major, minor) < (8, 9):
-                logging.warning("WARNING: Torch.compile with fp8_e4m3fn weights on CUDA compute capability < 8.9 may not be supported. Please use fp8_e5m2, GGUF or higher precision instead, or check the latest triton version that adds support for older architectures https://github.com/woct0rdho/triton-windows/releases/tag/v3.5.0-windows.post21")
-
-        if is_scaled_fp8 and "scaled" not in quantization:
-            raise ValueError("The model is a scaled fp8 model, please set quantization to '_scaled'")
-        if not is_scaled_fp8 and "scaled" in quantization:
-            raise ValueError("The model is not a scaled fp8 model, please disable '_scaled' in quantization")
-
-        if "vace_blocks.0.after_proj.weight" in sd and not "patch_embedding.weight" in sd:
-            raise ValueError("You are attempting to load a VACE module as a WanVideo model, instead you should use the vace_model input and matching T2V base model")
+        is_scaled_fp8 = True
+        quantization = "fp8_e4m3fn_scaled"
 
         first_key = next(iter(sd))
         if first_key.startswith("audio_model.") and not extra_audio_model:
@@ -1050,38 +917,9 @@ class OriginalWanTransformerModel(FromOriginalModelMixin):
         if "patch_embedding.0.weight" in sd:
             patch_size = [1]
 
-        is_humo = "audio_proj.audio_proj_glob_1.layer.weight" in sd
-        is_wananimate = "pose_patch_embedding.weight" in sd
 
-        #lynx
-        lynx_ip_layers = lynx_ref_layers = None
-        if "blocks.0.self_attn.ref_adapter.to_k_ref.weight" in sd:
-            logging.info("Lynx full reference adapter detected")
-            lynx_ref_layers = "full"
-        if "blocks.0.cross_attn.ip_adapter.registers" in sd:
-            logging.info("Lynx full IP adapter detected")
-            lynx_ip_layers = "full"
-        elif "blocks.0.cross_attn.ip_adapter.to_v_ip.weight" in sd:
-            logging.info("Lynx lite IP adapter detected")
-            lynx_ip_layers = "lite"
-
-        model_type = "t2v"
-        if "audio_injector.injector.0.k.weight" in sd:
-            model_type = "s2v"
-        elif not "text_embedding.0.weight" in sd:
-            model_type = "no_cross_attn" #minimaxremover
-        elif "model_type.Wan2_1-FLF2V-14B-720P" in sd or "img_emb.emb_pos" in sd or "flf2v" in model.lower():
-            model_type = "fl2v"
-        elif in_channels in [36, 48]:
-            if "blocks.0.cross_attn.k_img.weight" not in sd:
-                model_type = "t2v"
-            else:
-                model_type = "i2v"
-        elif in_channels == 16:
-            model_type = "t2v"
-        elif "control_adapter.conv.weight" in sd:
-            model_type = "t2v"
-
+        model_type = "i2v"
+      
         out_dim = 16
         if dim == 5120: #14B
             num_heads = 40
@@ -1097,19 +935,6 @@ class OriginalWanTransformerModel(FromOriginalModelMixin):
         else: #1.3B
             num_heads = 12
             num_layers = 30
-
-        vace_layers, vace_in_dim = None, None
-        if "vace_blocks.0.after_proj.weight" in sd:
-            if in_channels != 16:
-                raise ValueError("VACE only works properly with T2V models.")
-            model_type = "t2v"
-            if dim == 5120:
-                vace_layers = [0, 5, 10, 15, 20, 25, 30, 35]
-            else:
-                vace_layers = [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28]
-            vace_in_dim = 96
-
-        logging.info(f"Model cross attention type: {model_type}, num_heads: {num_heads}, num_layers: {num_layers}")
 
         teacache_coefficients_map = {
             "1_3B": {
@@ -1148,27 +973,7 @@ class OriginalWanTransformerModel(FromOriginalModelMixin):
             "i2v_14B_2.2": np.array([1.0]*2+[0.99512, 0.99559, 0.99559, 0.99561, 0.99595, 0.99577, 0.99512, 0.99512, 0.99546, 0.99534, 0.99543, 0.99531, 0.99496, 0.99491, 0.99504, 0.99499, 0.99444, 0.99449, 0.99481, 0.99481, 0.99435, 0.99435, 0.9943, 0.99431, 0.99411, 0.99406, 0.99373, 0.99376, 0.99413, 0.99405, 0.99363, 0.99359, 0.99335, 0.99331, 0.99244, 0.99243, 0.99229, 0.99229, 0.99239, 0.99236, 0.99163, 0.9916, 0.99149, 0.99151, 0.99191, 0.99192, 0.9898, 0.98981, 0.9899, 0.98987, 0.98849, 0.98849, 0.98846, 0.98846, 0.98861, 0.98861, 0.9874, 0.98738, 0.98588, 0.98589, 0.98539, 0.98534, 0.98444, 0.98439, 0.9831, 0.98309, 0.98119, 0.98118, 0.98001, 0.98, 0.97862, 0.97859, 0.97555, 0.97558, 0.97392, 0.97388, 0.97152, 0.97145, 0.96871, 0.9687, 0.96435, 0.96434, 0.96129, 0.96127, 0.95639, 0.95638, 0.95176, 0.95175, 0.94446, 0.94452, 0.93972, 0.93974, 0.93575, 0.9359, 0.93537, 0.93552, 0.96655, 0.96616]),
         }
 
-        model_variant = "14B" #default to this
-        if model_type == "i2v" or model_type == "fl2v":
-            if "480" in model or "fun" in model.lower() or "a2" in model.lower() or "540" in model: #just a guess for the Fun model for now...
-                model_variant = "i2v_480"
-            elif "720" in model:
-                model_variant = "i2v_720"
-        elif model_type == "t2v":
-            model_variant = "14B"
-            
-        if dim == 1536:
-            model_variant = "1_3B"
-        if dim == 3072:
-            logging.info(f"5B model detected, no Teacache or MagCache coefficients available, consider using EasyCache for this model")
-        
-        if "high" in model.lower() or "low" in model.lower():
-            if "i2v" in model.lower():
-                model_variant = "i2v_14B_2.2"
-            else:
-                model_variant = "14B_2.2"
-        
-        logging.info(f"Model variant detected: {model_variant}")
+        model_variant = "i2v_480"
         
         TRANSFORMER_CONFIG= {
             "dim": dim,
@@ -1192,22 +997,8 @@ class OriginalWanTransformerModel(FromOriginalModelMixin):
             "dtype": base_dtype,
             "teacache_coefficients": teacache_coefficients_map[model_variant],
             "magcache_ratios": magcache_ratios_map[model_variant],
-            "vace_layers": vace_layers,
-            "vace_in_dim": vace_in_dim,
-            "inject_sample_info": True if "fps_embedding.weight" in sd else False,
-            "add_ref_conv": True if "ref_conv.weight" in sd else False,
-            "in_dim_ref_conv": sd["ref_conv.weight"].shape[1] if "ref_conv.weight" in sd else None,
-            "add_control_adapter": True if "control_adapter.conv.weight" in sd else False,
             "use_motion_attn": True if "blocks.0.motion_attn.k.weight" in sd else False,
-            "enable_adain": True if "audio_injector.injector_adain_layers.0.linear.weight" in sd else False,
-            "cond_dim": sd["cond_encoder.weight"].shape[1] if "cond_encoder.weight" in sd else 0,
-            "zero_timestep": model_type == "s2v",
-            "humo_audio": is_humo,
-            "is_wananimate": is_wananimate,
             "rms_norm_function": rms_norm_function,
-            "lynx_ip_layers": lynx_ip_layers,
-            "lynx_ref_layers": lynx_ref_layers,
-            "is_longcat": dim == 4096,
 
         }
 
@@ -1287,12 +1078,7 @@ class OriginalWanTransformerModel(FromOriginalModelMixin):
         else:
             weight_dtype = base_dtype
         
-        params_to_keep = {"norm", "bias", "time_in", "patch_embedding", "time_", "img_emb", "modulation", "text_embedding", "adapter", "add", "ref_conv", "audio_proj"}
-
         control_lora = False
-
-        if not merge_loras and control_lora:
-            logging.warning("Control-LoRA patching is only supported with merge_loras=True")
 
         if lora is not None:
             comfy_model, control_lora, unianimate_sd = add_lora_weights(comfy_model, lora, base_dtype, merge_loras=merge_loras)
@@ -1300,34 +1086,54 @@ class OriginalWanTransformerModel(FromOriginalModelMixin):
                 logging.info("Merging UniAnimate weights to the model...")
                 sd.update(unianimate_sd)
                 del unianimate_sd
-      
-        if not gguf:
-            if lora is not None and merge_loras:
-                pass
-            elif "scaled" in quantization or lora is not None:
-                transformer = _replace_linear(transformer, base_dtype, sd, scale_weights=scale_weights, compile_args=compile_args)
-                transformer.patched_linear = True
+            
+        if lora is not None:
+            transformer = _replace_linear(transformer, base_dtype, sd, scale_weights=scale_weights, compile_args=compile_args)
+            transformer.patched_linear = True
+
+        if block_swap_args is not None:
+            transformer.use_non_blocking = block_swap_args.get("use_non_blocking", False)
+            transformer.blocks_to_swap = block_swap_args.get("blocks_to_swap", 0)
+            transformer.vace_blocks_to_swap = block_swap_args.get("vace_blocks_to_swap", 0)
+            transformer.prefetch_blocks = block_swap_args.get("prefetch_blocks", 0)
+            transformer.block_swap_debug = block_swap_args.get("block_swap_debug", False)
+            transformer.offload_img_emb = block_swap_args.get("offload_img_emb", False)
+            transformer.offload_txt_emb = block_swap_args.get("offload_txt_emb", False)
+
+        
+        load_weights(transformer, sd, weight_dtype, base_dtype=base_dtype, transformer_load_device=device, 
+                         block_swap_args=block_swap_args, compile_args=compile_args)
+
+        if gguf_reader is not None: #handle GGUF
+            pass
+        elif len(comfy_model.patches) != 0: #handle patched linear layers (unmerged loras, fp8 scaled)
+            if not merge_loras and ("fast" in quantization):
+                raise NotImplementedError("FP8 matmul with unmerged LoRAs is not supported")
+            from .wanvideo.custom_linear import set_lora_params
+            set_lora_params(transformer, comfy_model.patches)
+
+        transformer.lora_scheduling_enabled = False
+        
+        transformer = compile_model(transformer, compile_args)
+
 
         comfy_model["base_dtype"] = base_dtype
         comfy_model["weight_dtype"] = weight_dtype
         comfy_model["base_path"] = model_path
         comfy_model["model_name"] = model
         comfy_model["quantization"] = quantization
-        comfy_model["auto_cpu_offload"] = True if vram_management_args is not None else False
-        comfy_model["control_lora"] = control_lora
+        comfy_model["auto_cpu_offload"] = False
+        # comfy_model["control_lora"] = control_lora
         comfy_model["compile_args"] = compile_args
         comfy_model["gguf_reader"] = gguf_reader
-        comfy_model["fp8_matmul"] = "fast" in quantization
+        # comfy_model["fp8_matmul"] = "fast" in quantization
         comfy_model["scale_weights"] = scale_weights
         comfy_model["sd"] = sd
-        comfy_model["lora"] = lora
+        # comfy_model["lora"] = lora
         comfy_model["transformer_options"] = {}
         comfy_model["transformer_options"]["block_swap_args"] = block_swap_args
-        comfy_model["transformer_options"]["merge_loras"] = merge_loras
+        # comfy_model["transformer_options"]["merge_loras"] = merge_loras
 
-        # for model in mm.current_loaded_models:
-        #     if model._model() == patcher:
-        #         mm.current_loaded_models.remove(model)
         return comfy_model
 
 

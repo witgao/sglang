@@ -230,65 +230,25 @@ class WanVideoSampler:
         experimental_args=None, sigmas=None, unianimate_poses=None, fantasytalking_embeds=None, uni3c_embeds=None, multitalk_embeds=None, freeinit_args=None, start_step=0, end_step=-1, add_noise_to_samples=False):
 
         patcher = model
-        # model = patcher.model
         transformer = model.diffusion_model
 
         dtype = model["base_dtype"]
         weight_dtype = model["weight_dtype"]
-        fp8_matmul = model["fp8_matmul"]
-        gguf_reader = model["gguf_reader"]
-        control_lora = model["control_lora"]
+        gguf_reader = None
 
         vae = image_embeds.get("vae", None)
-        tiled_vae = image_embeds.get("tiled_vae", False)
+        tiled_vae = False
 
         transformer_options = model["transformer_options"]
-        merge_loras = transformer_options["merge_loras"]
 
         block_swap_args = transformer_options.get("block_swap_args", None)
-        if block_swap_args is not None:
-            transformer.use_non_blocking = block_swap_args.get("use_non_blocking", False)
-            transformer.blocks_to_swap = block_swap_args.get("blocks_to_swap", 0)
-            transformer.vace_blocks_to_swap = block_swap_args.get("vace_blocks_to_swap", 0)
-            transformer.prefetch_blocks = block_swap_args.get("prefetch_blocks", 0)
-            transformer.block_swap_debug = block_swap_args.get("block_swap_debug", False)
-            transformer.offload_img_emb = block_swap_args.get("offload_img_emb", False)
-            transformer.offload_txt_emb = block_swap_args.get("offload_txt_emb", False)
 
-        is_5b = transformer.out_dim == 48
-        vae_upscale_factor = 16 if is_5b else 8
+        is_5b = False
+        vae_upscale_factor = 8
 
-        if model["sd"] is not None and gguf_reader is None:
-            load_weights(model.diffusion_model, model["sd"], weight_dtype, base_dtype=dtype, transformer_load_device=device, 
-                         block_swap_args=block_swap_args, compile_args=model["compile_args"])
-
-        if gguf_reader is not None: #handle GGUF
-            pass
-        elif len(patcher.patches) != 0: #handle patched linear layers (unmerged loras, fp8 scaled)
-            log.info(f"Using {len(patcher.patches)} LoRA weight patches for WanVideo model")
-            if not merge_loras and fp8_matmul:
-                raise NotImplementedError("FP8 matmul with unmerged LoRAs is not supported")
-            set_lora_params(transformer, patcher.patches)
-
-        transformer.lora_scheduling_enabled = transformer_options.get("lora_scheduling_enabled", False)
-
-        #torch.compile
-        if model["auto_cpu_offload"] is False:
-            transformer = compile_model(transformer, model["compile_args"])
 
         multitalk_sampling = image_embeds.get("multitalk_sampling", False)
 
-        if multitalk_sampling and context_options is not None:
-            raise Exception("context_options are not compatible or necessary with 'WanVideoImageToVideoMultiTalk' node, since it's already an alternative method that creates the video in a loop.")
-
-        if not multitalk_sampling and scheduler == "multitalk":
-            raise Exception("multitalk scheduler is only for multitalk sampling when using ImagetoVideoMultiTalk -node")
-
-        # text_embeds = {
-        #         "prompt_embeds": text_embeds,
-        #         "negative_prompt_embeds": [],
-        # }
-       
         text_embeds = dict_to_device(text_embeds, device)
 
         seed_g = torch.Generator(device=torch.device("cpu"))
@@ -302,15 +262,8 @@ class WanVideoSampler:
             add_noise_to_samples = True #for now to not break old workflows
 
         sample_scheduler = None
-        if isinstance(scheduler, dict):
-            sample_scheduler = copy.deepcopy(scheduler["sample_scheduler"])
-            timesteps = scheduler["timesteps"]
-            start_step = scheduler.get("start_step", start_step)
-        elif scheduler != "multitalk":
-            sample_scheduler, timesteps,_,_ = get_scheduler(scheduler, steps, start_step, end_step, shift, device, transformer.dim, flowedit_args, denoise_strength, sigmas=sigmas, log_timesteps=True)
-            log.info(f"sigmas: {sample_scheduler.sigmas}")
-        else:
-            timesteps = torch.tensor([1000, 750, 500, 250], device=device)
+      
+        sample_scheduler, timesteps,_,_ = get_scheduler(scheduler, steps, start_step, end_step, shift, device, transformer.dim, flowedit_args, denoise_strength, sigmas=None, log_timesteps=True)
 
         total_steps = steps
         steps = len(timesteps)
@@ -321,16 +274,7 @@ class WanVideoSampler:
             if arg not in step_sig.parameters:
                 scheduler_step_args.pop(arg)
 
-        if isinstance(cfg, list):
-            if steps < len(cfg):
-                log.info(f"Received {len(cfg)} cfg values, but only {steps} steps. Slicing cfg list to match steps.")
-                cfg = cfg[:steps]
-            elif steps > len(cfg):
-                log.info(f"Received only {len(cfg)} cfg values, but {steps} steps. Extending cfg list to match steps.")
-                cfg.extend([cfg[-1]] * (steps - len(cfg)))
-            log.info(f"Using per-step cfg list: {cfg}")
-        else:
-            cfg = [cfg] * (steps + 1)
+        cfg = [cfg] * (steps + 1)
 
         control_latents = control_camera_latents = clip_fea = clip_fea_neg = end_image = recammaster = camera_embed = unianim_data = mocha_embeds = None
         fun_or_fl2v_model = has_ref = drop_last = False
@@ -338,98 +282,88 @@ class WanVideoSampler:
         add_cond = attn_cond = attn_cond_neg  = None
 
         #I2V
-        image_cond = image_embeds.get("image_embeds", None)
-        if image_cond is not None:
+        # image_cond = image_embeds.get("image_embeds", None)
+        # if image_cond is not None:
             # control_embeds = image_embeds.get("control_embeds", None)
-            pass
-        else: #t2v
-            target_shape = image_embeds.get("target_shape", None)
-            if target_shape is None:
-                raise ValueError("Empty image embeds must be provided for T2V models")
+            # pass
+        # else: #t2v
+        target_shape = image_embeds.get("target_shape", None)
+            # if target_shape is None:
+            #     raise ValueError("Empty image embeds must be provided for T2V models")
 
-            has_ref = image_embeds.get("has_ref", False)
+        has_ref = False
 
-            # VACE
-            vace_context = image_embeds.get("vace_context", None)
-            vace_scale = image_embeds.get("vace_scale", None)
-            if not isinstance(vace_scale, list):
-                vace_scale = [vace_scale] * (steps+1)
-
-            noise = torch.randn(
-                    48 if is_5b else 16,
-                    target_shape[1] + 1 if has_ref else target_shape[1],
-                    target_shape[2] // 2 if is_5b else target_shape[2], #todo make this smarter
-                    target_shape[3] // 2 if is_5b else target_shape[3], #todo make this smarter
+        noise = torch.randn(
+                    16,
+                    target_shape[1],
+                    target_shape[2], #todo make this smarter
+                    target_shape[3], #todo make this smarter
                     dtype=torch.float32,
                     device=torch.device("cpu"),
                     generator=seed_g)
             
-            seq_len = math.ceil((noise.shape[2] * noise.shape[3]) / 4 * noise.shape[1])
-
-            # Fun control and control lora
-            control_embeds = image_embeds.get("control_embeds", None)
+        seq_len = math.ceil((noise.shape[2] * noise.shape[3]) / 4 * noise.shape[1])
            
         # CLIP image features
-        clip_fea = image_embeds.get("clip_context", None)
-        if clip_fea is not None:
-            clip_fea = clip_fea.to(dtype)
-        clip_fea_neg = image_embeds.get("negative_clip_context", None)
-        if clip_fea_neg is not None:
-            clip_fea_neg = clip_fea_neg.to(dtype)
+        # clip_fea = image_embeds.get("clip_context", None)
+        # if clip_fea is not None:
+        #     clip_fea = clip_fea.to(dtype)
+        # clip_fea_neg = image_embeds.get("negative_clip_context", None)
+        # if clip_fea_neg is not None:
+        #     clip_fea_neg = clip_fea_neg.to(dtype)
 
-        num_frames = image_embeds.get("num_frames", 0)
+        num_frames = 0
 
-        #HuMo inputs
-        humo_reference_count = image_embeds.get("humo_reference_count", 0)
+        humo_reference_count = 0
 
-        humo_image_cond = image_embeds.get("humo_image_cond", None)
+        humo_image_cond = None
 
         pos_latent = neg_latent = None
 
         # region WanAnim inputs
-        wananimate_loop = image_embeds.get("looping", False)
-        if wananimate_loop and context_options is not None:
-            raise Exception("context_options are not compatible or necessary with WanAnim looping, since it creates the video in a loop.")
-        wananim_face_pixels = image_embeds.get("face_pixels", None)
-        wananim_is_masked = image_embeds.get("is_masked", False)
-        if not wananimate_loop: # create zero face pixels if mask is provided without face pixels, as masking seems to require face input to work properly
-            if wananim_face_pixels is None and wananim_is_masked:
-                if context_options is None:
-                    wananim_face_pixels = torch.zeros(1, 3, num_frames-1, 512, 512, dtype=torch.float32, device=offload_device)
-                else:
-                    wananim_face_pixels = torch.zeros(1, 3, context_options["context_frames"]-1, 512, 512, dtype=torch.float32, device=device)
+        # wananimate_loop = image_embeds.get("looping", False)
+        # if wananimate_loop and context_options is not None:
+        #     raise Exception("context_options are not compatible or necessary with WanAnim looping, since it creates the video in a loop.")
+        # wananim_face_pixels = image_embeds.get("face_pixels", None)
+        # wananim_is_masked = image_embeds.get("is_masked", False)
+        # if not wananimate_loop: # create zero face pixels if mask is provided without face pixels, as masking seems to require face input to work properly
+        #     if wananim_face_pixels is None and wananim_is_masked:
+        #         if context_options is None:
+        #             wananim_face_pixels = torch.zeros(1, 3, num_frames-1, 512, 512, dtype=torch.float32, device=offload_device)
+        #         else:
+        #             wananim_face_pixels = torch.zeros(1, 3, context_options["context_frames"]-1, 512, 512, dtype=torch.float32, device=device)
 
-        if image_cond is None:
-            image_cond = image_embeds.get("ref_latent", None)
-            has_ref = image_cond is not None or has_ref
+        # if image_cond is None:
+        image_cond = None
+        has_ref = False
 
         latent_video_length = noise.shape[1]
 
         # FantasyTalking
         audio_proj = multitalk_audio_embeds = None
         audio_scale = 1.0
-        if fantasytalking_embeds is not None:
-            log.info(f"Audio proj shape: {audio_proj.shape}")
-        elif multitalk_embeds is not None:
+        # if fantasytalking_embeds is not None:
+        #     log.info(f"Audio proj shape: {audio_proj.shape}")
+        # elif multitalk_embeds is not None:
             # Handle single or multiple speaker embeddings
-            audio_features_in = multitalk_embeds
-            if audio_features_in is None:
-                multitalk_audio_embeds = None
-            else:
-                if isinstance(audio_features_in, list):
-                    multitalk_audio_embeds = [emb.to(device, dtype) for emb in audio_features_in]
-                else:
-                    # keep backward-compatibility with single tensor input
-                    multitalk_audio_embeds = [audio_features_in.to(device, dtype)]
+        audio_features_in = multitalk_embeds
+            # if audio_features_in is None:
+            #     multitalk_audio_embeds = None
+            # else:
+                # if isinstance(audio_features_in, list):
+        multitalk_audio_embeds = [emb.to(device, dtype) for emb in audio_features_in]
+                # else:
+                #     # keep backward-compatibility with single tensor input
+                #     multitalk_audio_embeds = [audio_features_in.to(device, dtype)]
 
-            audio_scale = 1.0
-            audio_cfg_scale = 1.0
-            ref_target_masks = None
-            if not isinstance(audio_cfg_scale, list):
-                audio_cfg_scale = [audio_cfg_scale] * (steps + 1)
+        audio_scale = 1.0
+        audio_cfg_scale = 1.0
+        ref_target_masks = None
+        if not isinstance(audio_cfg_scale, list):
+            audio_cfg_scale = [audio_cfg_scale] * (steps + 1)
 
-            shapes = [tuple(e.shape) for e in multitalk_audio_embeds]
-            log.info(f"Multitalk audio features shapes (per speaker): {shapes}")
+        shapes = [tuple(e.shape) for e in multitalk_audio_embeds]
+        log.info(f"Multitalk audio features shapes (per speaker): {shapes}")
 
        
         latent = noise
@@ -437,8 +371,8 @@ class WanVideoSampler:
         uni3c_data = uni3c_data_input = None
 
         # Bindweave
-        qwenvl_embeds_pos = image_embeds.get("qwenvl_embeds_pos", None)
-        qwenvl_embeds_neg = image_embeds.get("qwenvl_embeds_neg", None)
+        qwenvl_embeds_pos = None
+        qwenvl_embeds_neg = None
 
         # mm.unload_all_models()
         # mm.soft_empty_cache()
@@ -454,21 +388,21 @@ class WanVideoSampler:
         
         if previous_cache_states is None:
             self.cache_state = [None, None]
-            if phantom_latents is not None:
-                log.info(f"Phantom latents shape: {phantom_latents.shape}")
-                self.cache_state = [None, None, None]
+            # if phantom_latents is not None:
+            #     log.info(f"Phantom latents shape: {phantom_latents.shape}")
+            #     self.cache_state = [None, None, None]
             self.cache_state_source = [None, None]
             self.cache_states_context = []
 
         # Skip layer guidance (SLG)
-        if slg_args is not None:
-            pass
-        else:
-            transformer.slg_blocks = None
+        # if slg_args is not None:
+        #     pass
+        # else:
+        transformer.slg_blocks = None
 
         # Setup radial attention
-        if transformer.attention_mode == "radial_sage_attention":
-            setup_radial_attention(transformer, transformer_options, latent, seq_len, latent_video_length, context_options=context_options)
+        # if transformer.attention_mode == "radial_sage_attention":
+        #     setup_radial_attention(transformer, transformer_options, latent, seq_len, latent_video_length, context_options=context_options)
 
 
         # Experimental args
@@ -480,34 +414,34 @@ class WanVideoSampler:
         ntk_alphas = [1.0, 1.0, 1.0]
 
         # Stand-In
-        standin_input = image_embeds.get("standin_input", None)
+        standin_input = None
 
         freqs = None
         transformer.rope_embedder.k = None
         transformer.rope_embedder.num_frames = None
         d = transformer.dim // transformer.num_heads
 
-        if mocha_embeds is not None:
-            pass
-        elif "default" in rope_function or bidirectional_sampling: # original RoPE
-            freqs = torch.cat([
-                rope_params(1024, d - 4 * (d // 6), L_test=latent_video_length, k=riflex_freq_index),
-                rope_params(1024, 2 * (d // 6)),
-                rope_params(1024, 2 * (d // 6))
-            ],
-            dim=1)
-        elif "comfy" in rope_function: # comfy's rope
-            transformer.rope_embedder.k = riflex_freq_index
-            transformer.rope_embedder.num_frames = latent_video_length
+        # if mocha_embeds is not None:
+        #     pass
+        # elif "default" in rope_function or bidirectional_sampling: # original RoPE
+        #     freqs = torch.cat([
+        #         rope_params(1024, d - 4 * (d // 6), L_test=latent_video_length, k=riflex_freq_index),
+        #         rope_params(1024, 2 * (d // 6)),
+        #         rope_params(1024, 2 * (d // 6))
+        #     ],
+        #     dim=1)
+        # elif "comfy" in rope_function: # comfy's rope
+        transformer.rope_embedder.k = riflex_freq_index
+        transformer.rope_embedder.num_frames = latent_video_length
 
         transformer.rope_func = rope_function
         for block in transformer.blocks:
             block.rope_func = rope_function
-        if transformer.vace_layers is not None:
-            for block in transformer.vace_blocks:
-                block.rope_func = rope_function
+        # if transformer.vace_layers is not None:
+        #     for block in transformer.vace_blocks:
+        #         block.rope_func = rope_function
 
-        lynx_embeds = image_embeds.get("lynx_embeds", None)
+        lynx_embeds = None
 
         ttm_start_step = 0
 
@@ -772,14 +706,14 @@ class WanVideoSampler:
 
             try:
                 #region main loop start
-                for idx, t in enumerate(tqdm(timesteps, disable=multitalk_sampling or wananimate_loop)):
-                    if flowedit_args is not None:
-                        if idx < skip_steps:
-                            continue
+                for idx, t in enumerate(tqdm(timesteps, disable=multitalk_sampling)):
+                    # if flowedit_args is not None:
+                    #     if idx < skip_steps:
+                    #         continue
 
-                    if bidirectional_sampling:
-                        latent_flipped = torch.flip(latent, dims=[1])
-                        latent_model_input_flipped = latent_flipped.to(device)
+                    # if bidirectional_sampling:
+                    #     latent_flipped = torch.flip(latent, dims=[1])
+                    #     latent_model_input_flipped = latent_flipped.to(device)
 
                     latent_model_input = latent.to(device)
 
@@ -961,7 +895,7 @@ class WanVideoSampler:
                                     sample_scheduler = copy.deepcopy(scheduler["sample_scheduler"])
                                     timesteps = scheduler["timesteps"]
                                 else:
-                                    sample_scheduler, timesteps,_,_ = get_scheduler(scheduler, total_steps, start_step, end_step, shift, device, transformer.dim, flowedit_args, denoise_strength, sigmas=sigmas)
+                                    sample_scheduler, timesteps,_,_ = get_scheduler(scheduler, total_steps, start_step, end_step, shift, device, transformer.dim, flowedit_args, denoise_strength, sigmas=None)
                                 timesteps = [torch.tensor([float(t)], device=device) for t in timesteps] + [torch.tensor([0.], device=device)]
 
                             # sample videos

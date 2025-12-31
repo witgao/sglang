@@ -1647,68 +1647,8 @@ class WanModel(torch.nn.Module):
                 dtype=torch.float16,
                 teacache_coefficients=[],
                 magcache_ratios=[],
-                vace_layers=None,
-                vace_in_dim=None,
-                inject_sample_info=False,
-                add_ref_conv=False,
-                in_dim_ref_conv=16,
-                add_control_adapter=False,
-                in_dim_control_adapter=24,
                 use_motion_attn=False,
-                #s2v
-                cond_dim=0,
-                audio_dim=1024,
-                num_audio_token=4,
-                enable_adain=False,
-                adain_mode="attn_norm",
-                audio_inject_layers=[0, 4, 8, 12, 16, 20, 24, 27, 30, 33, 36, 39],
-                zero_timestep=False,
-                humo_audio=False,
-                # WanAnimate
-                is_wananimate=False,
-                motion_encoder_dim=512,
-                # lynx
-                lynx_ip_layers=None,
-                lynx_ref_layers=None,
-                # ovi
-                is_ovi_audio_model=False,
-                # LongCat
-                is_longcat=False,
                 ):
-        r"""
-        Initialize the diffusion model backbone.
-
-        Args:
-            model_type (`str`, *optional*, defaults to 't2v'):
-                Model variant - 't2v' (text-to-video) or 'i2v' (image-to-video)
-            patch_size (`tuple`, *optional*, defaults to (1, 2, 2)):
-                3D patch dimensions for video embedding (t_patch, h_patch, w_patch)
-            text_len (`int`, *optional*, defaults to 512):
-                Fixed length for text embeddings
-            in_dim (`int`, *optional*, defaults to 16):
-                Input video channels (C_in)
-            dim (`int`, *optional*, defaults to 2048):
-                Hidden dimension of the transformer
-            ffn_dim (`int`, *optional*, defaults to 8192):
-                Intermediate dimension in feed-forward network
-            freq_dim (`int`, *optional*, defaults to 256):
-                Dimension for sinusoidal time embeddings
-            text_dim (`int`, *optional*, defaults to 4096):
-                Input dimension for text embeddings
-            out_dim (`int`, *optional*, defaults to 16):
-                Output video channels (C_out)
-            num_heads (`int`, *optional*, defaults to 16):
-                Number of attention heads
-            num_layers (`int`, *optional*, defaults to 32):
-                Number of transformer blocks
-            qk_norm (`bool`, *optional*, defaults to True):
-                Enable query/key normalization
-            cross_attn_norm (`bool`, *optional*, defaults to False):
-                Enable cross-attention normalization
-            eps (`float`, *optional*, defaults to 1e-6):
-                Epsilon value for normalization layers
-        """
-
         super().__init__()
 
         self.model_type = model_type
@@ -1733,7 +1673,6 @@ class WanModel(torch.nn.Module):
         self.rope_func = rope_func
         self.main_device = main_device
         self.offload_device = offload_device
-        self.vace_layers = vace_layers
         self.device = main_device
         self.patched_linear = False
 
@@ -1783,31 +1722,13 @@ class WanModel(torch.nn.Module):
 
         self.multitalk_model_type = "none"
 
-        self.lynx_ip_layers = lynx_ip_layers
-        self.lynx_ref_layers = lynx_ref_layers
-
-        self.humo_audio = humo_audio
-
-        self.motion_encoder_dim = motion_encoder_dim
-
         self.base_dtype = dtype
-
-        self.is_ovi_audio_model = patch_size == [1]
 
         self.audio_model = None
 
-        self.is_longcat = is_longcat
 
         # embeddings
-        if not self.is_ovi_audio_model:
-            self.patch_embedding = nn.Conv3d(in_dim, dim, kernel_size=patch_size, stride=patch_size)
-        # else:
-        #     from ...Ovi.audio_model_layers import ChannelLastConv1d, ConvMLP
-        #     self.patch_embedding = nn.Sequential(
-        #         ChannelLastConv1d(in_dim, dim, kernel_size=7, padding=3),
-        #         nn.SiLU(),
-        #         ConvMLP(dim, dim * 4, kernel_size=7, padding=3),
-        #     )
+        self.patch_embedding = nn.Conv3d(in_dim, dim, kernel_size=patch_size, stride=patch_size)
         
         self.original_patch_embedding = self.patch_embedding
         self.expanded_patch_embedding = self.patch_embedding
@@ -1817,66 +1738,29 @@ class WanModel(torch.nn.Module):
                 nn.Linear(text_dim, dim), nn.GELU(approximate='tanh'),
                 nn.Linear(dim, dim))
 
-        if not is_longcat:
-            self.time_embedding = nn.Sequential(nn.Linear(freq_dim, dim), nn.SiLU(), nn.Linear(dim, dim))
-            self.time_projection = nn.Sequential(nn.SiLU(), nn.Linear(dim, dim * 6))
-        # else:
-        #     from ...LongCat.layers import TimestepEmbedder
-        #     adaln_tembed_dim = 512
-        #     self.time_embedding = TimestepEmbedder(t_embed_dim=adaln_tembed_dim, frequency_embedding_size=freq_dim)
+        self.time_embedding = nn.Sequential(nn.Linear(freq_dim, dim), nn.SiLU(), nn.Linear(dim, dim))
+        self.time_projection = nn.Sequential(nn.SiLU(), nn.Linear(dim, dim * 6))
+      
 
-
-        if vace_layers is not None:
-            # self.vace_layers = [i for i in range(0, self.num_layers, 2)] if vace_layers is None else vace_layers
-            # self.vace_in_dim = self.in_dim if vace_in_dim is None else vace_in_dim
-
-            # self.vace_layers_mapping = {i: n for n, i in enumerate(self.vace_layers)}
-
-            # # vace blocks
-            # self.vace_blocks = nn.ModuleList([
-            #     VaceWanAttentionBlock('t2v_cross_attn', self.in_features, self.out_features, self.ffn_dim, self.ffn2_dim,self.num_heads, self.qk_norm,
-            #                             self.cross_attn_norm, self.eps, block_id=i, attention_mode=self.attention_mode, rope_func=self.rope_func, rms_norm_function=rms_norm_function)
-            #     for i in self.vace_layers
-            # ])
-            pass
-            # # vace patch embeddings
-            # self.vace_patch_embedding = nn.Conv3d(
-            #     self.vace_in_dim, self.dim, kernel_size=self.patch_size, stride=self.patch_size
-            # )
-            # self.blocks = nn.ModuleList([
-            # BaseWanAttentionBlock('t2v_cross_attn', self.in_features, self.out_features, ffn_dim, self.ffn2_dim, num_heads,
-            #                   qk_norm, cross_attn_norm, eps,
-            #                   attention_mode=self.attention_mode, rope_func=self.rope_func, rms_norm_function=rms_norm_function,
-            #                   block_id=self.vace_layers_mapping[i] if i in self.vace_layers else None, lynx_ip_layers=lynx_ip_layers, lynx_ref_layers=lynx_ref_layers, block_idx=i)
-            # for i in range(num_layers)
-            # ])
+        if model_type == 't2v' or model_type == 's2v':
+            cross_attn_type = 't2v_cross_attn'
+        elif model_type == 'i2v' or model_type == 'fl2v':
+            cross_attn_type = 'i2v_cross_attn'
         else:
-            # blocks
-            if model_type == 't2v' or model_type == 's2v':
-                cross_attn_type = 't2v_cross_attn'
-            elif model_type == 'i2v' or model_type == 'fl2v':
-                cross_attn_type = 'i2v_cross_attn'
-            else:
-                cross_attn_type = 'no_cross_attn'
+            cross_attn_type = 'no_cross_attn'
 
-            self.blocks = nn.ModuleList([
-                WanAttentionBlock(cross_attn_type, self.in_features, self.out_features, ffn_dim, ffn2_dim, num_heads,
+        self.blocks = nn.ModuleList([
+            WanAttentionBlock(cross_attn_type, self.in_features, self.out_features, ffn_dim, ffn2_dim, num_heads,
                                 qk_norm, cross_attn_norm, eps,
                                 attention_mode=self.attention_mode, rope_func=self.rope_func, rms_norm_function=rms_norm_function, 
-                                use_motion_attn=(i % 4 == 0 and use_motion_attn), use_humo_audio_attn=self.humo_audio,
-                                face_fuser_block = (i % 5 == 0 and is_wananimate), lynx_ip_layers=lynx_ip_layers, lynx_ref_layers=lynx_ref_layers,
-                                block_idx=i, is_longcat=is_longcat)
-                for i in range(num_layers)
-            ])
-        #MTV Crafter
-        # if use_motion_attn:
-        #     self.pad_motion_tokens = torch.zeros(1, 1, 2048)
+                                use_motion_attn=(i % 4 == 0 and use_motion_attn), use_humo_audio_attn=False,
+                                face_fuser_block = (i % 5 == 0 and False), lynx_ip_layers=None, lynx_ref_layers=None,
+                                block_idx=i, is_longcat=False)
+            for i in range(num_layers)
+        ])
 
         # head
-        if not is_longcat:
-            self.head = Head(dim, out_dim, patch_size, eps)
-        # else:
-        #     self.head = Head_adaLN(dim, out_dim, patch_size, eps, adaln_tembed_dim=512)
+        self.head = Head(dim, out_dim, patch_size, eps)
 
         d = self.dim // self.num_heads
         self.rope_embedder = EmbedND_RifleX(
@@ -1894,81 +1778,16 @@ class WanModel(torch.nn.Module):
         if model_type == 'i2v' or model_type == 'fl2v':
             self.img_emb = MLPProj(1280, dim, fl_pos_emb=model_type == 'fl2v')
 
-        #skyreels v2
-        # if inject_sample_info:
-        #     self.fps_embedding = nn.Embedding(2, dim)
-        #     self.fps_projection = nn.Sequential(nn.Linear(dim, dim), nn.SiLU(), nn.Linear(dim, dim * 6))
-        #fun 1.1
-        # if add_ref_conv:
-            # self.ref_conv = nn.Conv2d(in_dim_ref_conv, dim, kernel_size=patch_size[1:], stride=patch_size[1:])
-        # else:
+       
         self.ref_conv = None
 
-        # if add_control_adapter:
-        #     from .wan_camera_adapter import SimpleAdapter
-        #     self.control_adapter = SimpleAdapter(in_dim_control_adapter, dim, kernel_size=patch_size[1:], stride=patch_size[1:])
-        # else:
         self.control_adapter = None
 
         #S2V
         self.zero_timestep = self.audio_injector = self.trainable_cond_mask =None
-        if cond_dim > 0:
-            self.cond_encoder = nn.Conv3d(
-                cond_dim,
-                self.dim,
-                kernel_size=self.patch_size,
-                stride=self.patch_size)
-        # if self.model_type == 's2v':
-        #     self.enable_adain = enable_adain
-        #     self.casual_audio_encoder = CausalAudioEncoder(
-        #         dim=audio_dim,
-        #         out_dim=self.dim,
-        #         num_token=num_audio_token,
-        #         need_global=enable_adain)
-        #     all_modules, all_modules_names = torch_dfs(
-        #         self.blocks, parent_name="root.transformer_blocks")
-        #     self.audio_injector = AudioInjector_WAN(
-        #         all_modules,
-        #         all_modules_names,
-        #         dim=self.dim,
-        #         num_heads=self.num_heads,
-        #         inject_layer=audio_inject_layers,
-        #         root_net=self,
-        #         enable_adain=enable_adain,
-        #         adain_dim=self.dim,
-        #         need_adain_ont=adain_mode != "attn_norm",
-        #         attention_mode=attention_mode
-        #     )
-        #     self.trainable_cond_mask = nn.Embedding(3, self.dim)
-
-        #     self.frame_packer = FramePackMotioner(
-        #         inner_dim=self.dim,
-        #         num_heads=self.num_heads,
-        #         zip_frame_buckets=[1, 2, 16],
-        #         drop_mode='padd')
-        self.adain_mode = adain_mode
-        self.zero_timestep = zero_timestep
-
-        # HuMo Audio
-        # if self.humo_audio:
-        #     from ...HuMo.audio_proj import AudioProjModel
-        #     self.audio_proj = AudioProjModel(seq_len=8, blocks=5, channels=1280, 
-        #         intermediate_dim=512, output_dim=1536, context_tokens=16)
-        # WanAnimate
+       
         self.motion_encoder = self.pose_patch_embedding = self.face_encoder = self.face_adapter = None
-        # if is_wananimate:
-        #     from .wananimate.motion_encoder import MotionExtractor
-        #     from .wananimate.face_blocks import FaceEncoder
-        #     self.pose_patch_embedding = nn.Conv3d(16, dim, kernel_size=patch_size, stride=patch_size)
-        #     self.motion_encoder = MotionExtractor()
-
-        #     self.face_encoder = FaceEncoder(
-        #         in_dim=motion_encoder_dim,
-        #         out_dim=self.dim,
-        #         num_heads=4,
-        #         dtype=dtype
-        #     )
-
+       
     def block_swap(self, blocks_to_swap, offload_txt_emb=False, offload_img_emb=False, vace_blocks_to_swap=None, prefetch_blocks=0, block_swap_debug=False):
         # Clamp blocks_to_swap to valid range
         blocks_to_swap = max(0, min(blocks_to_swap, len(self.blocks)))
@@ -2000,24 +1819,6 @@ class WanModel(torch.nn.Module):
         if blocks_to_swap != -1 and vace_blocks_to_swap == 0:
             vace_blocks_to_swap = 1
 
-        if vace_blocks_to_swap > 0 and self.vace_layers is not None:
-            # Clamp vace_blocks_to_swap to valid range
-            vace_blocks_to_swap = max(0, min(vace_blocks_to_swap, len(self.vace_blocks)))
-            self.vace_blocks_to_swap = vace_blocks_to_swap
-            
-            # Calculate the index where VACE swapping starts
-            vace_swap_start_idx = len(self.vace_blocks) - vace_blocks_to_swap
-
-            for b, block in tqdm(enumerate(self.vace_blocks), total=len(self.vace_blocks), desc="Initializing vace block swap"):
-                block_memory = get_module_memory_mb(block)
-                
-                if b < vace_swap_start_idx:
-                    block.to(self.main_device)
-                    total_main_memory += block_memory
-                else:
-                    block.to(self.offload_device, non_blocking=self.use_non_blocking)
-                    total_offload_memory += block_memory
-
         mm.soft_empty_cache()
         gc.collect()
 
@@ -2028,116 +1829,6 @@ class WanModel(torch.nn.Module):
         log.info(f"Total memory used by transformer blocks: {(total_offload_memory + total_main_memory):.2f}MB")
         log.info(f"Non-blocking memory transfer: {self.use_non_blocking}")
         log.info("----------------------")
-
-    # def forward_vace(
-    #     self,
-    #     x,
-    #     vace_context,
-    #     seq_len,
-    #     kwargs
-    # ):
-    #     # embeddings
-    #     c = [self.vace_patch_embedding(u.unsqueeze(0).float()).to(x.dtype) for u in vace_context]
-    #     c = [u.flatten(2).transpose(1, 2) for u in c]
-    #     c = torch.cat([
-    #         torch.cat([u, u.new_zeros(1, seq_len - u.size(1), u.size(2))],
-    #                   dim=1) for u in c
-    #     ])
-
-    #     if x.shape[1] > c.shape[1]:
-    #         c = torch.cat([c.new_zeros(x.shape[0], x.shape[1] - c.shape[1], c.shape[2]), c], dim=1)
-    #     if c.shape[1] > x.shape[1]:
-    #         c = c[:, :x.shape[1]]
-        
-    #     hints = []
-    #     current_c = c
-    #     vace_swap_start_idx = len(self.vace_blocks) - self.vace_blocks_to_swap if self.vace_blocks_to_swap > 0 else len(self.vace_blocks)
-        
-    #     for b, block in enumerate(self.vace_blocks):
-    #         if b >= vace_swap_start_idx and self.vace_blocks_to_swap > 0:
-    #             block.to(self.main_device)
-                
-    #         if b == 0:
-    #             c_processed = block.before_proj(current_c) + x
-    #         else:
-    #             c_processed = current_c
-                
-    #         c_processed = block.forward(c_processed, **kwargs)[0]
-            
-    #         # Store skip connection
-    #         c_skip = block.after_proj(c_processed)
-    #         hints.append(c_skip.to(
-    #             self.offload_device if self.vace_blocks_to_swap > 0 else self.main_device, 
-    #             non_blocking=self.use_non_blocking
-    #         ))
-            
-    #         current_c = c_processed
-            
-    #         if b >= vace_swap_start_idx and self.vace_blocks_to_swap > 0:
-    #             block.to(self.offload_device, non_blocking=self.use_non_blocking)
-
-    #     return hints
-    
-    # def audio_injector_forward(self, block_idx, x, audio_emb, scale=1.0):
-    #     if block_idx in self.audio_injector.injected_block_id.keys():
-    #         audio_attn_id = self.audio_injector.injected_block_id[block_idx]
-    #         num_frames = audio_emb.shape[1]# b f n c
-
-    #         input_x = x[:, :self.original_seq_len].clone()  # b (f h w) c
-    #         input_x = rearrange(input_x, "b (t n) c -> (b t) n c", t=num_frames)
-
-    #         if self.enable_adain and self.adain_mode == "attn_norm":
-    #             audio_emb_global = self.audio_emb_global
-    #             audio_emb_global = rearrange(audio_emb_global,"b t n c -> (b t) n c")
-    #             attn_x = self.audio_injector.injector_adain_layers[audio_attn_id](input_x, temb=audio_emb_global[:, 0])
-    #         else:
-    #             attn_x = self.audio_injector.injector_pre_norm_feat[audio_attn_id](input_x)
-
-    #         attn_audio_emb = rearrange(audio_emb, "b t n c -> (b t) n c", t=num_frames)
-    #         residual_out = self.audio_injector.injector[audio_attn_id](
-    #             x=attn_x ,
-    #             context=attn_audio_emb * scale,
-    #         )
-    #         residual_out = rearrange(residual_out, "(b t) n c -> b (t n) c", t=num_frames)
-    #         x[:, :self.original_seq_len].add_(residual_out)
-
-    #     return x
-
-    # def wananimate_pose_embedding(self, x, pose_latents, strength=1.0):
-    #     pose_latents = [self.pose_patch_embedding(u.unsqueeze(0).to(torch.float32)).to(x[0].dtype) for u in pose_latents]
-    #     for x_, pose_latents_ in zip(x, pose_latents):
-    #         x_[:, :, 1:].add_(pose_latents_, alpha=strength)
-    #     return x
-
-
-    # def wananimate_face_embedding(self, face_pixel_values):
-    #     b,c,T,h,w = face_pixel_values.shape
-    #     face_pixel_values = rearrange(face_pixel_values, "b c t h w -> (b t) c h w")
-
-    #     encode_bs = 8
-    #     face_pixel_values_tmp = []
-    #     self.motion_encoder.to(self.main_device)
-    #     for i in range(math.ceil(face_pixel_values.shape[0]/encode_bs)):
-    #         face_pixel_values_tmp.append(self.motion_encoder(face_pixel_values[i*encode_bs:(i+1)*encode_bs]))
-    #     del face_pixel_values
-    #     self.motion_encoder.to(self.offload_device)
-
-    #     motion_vec = rearrange(torch.cat(face_pixel_values_tmp), "(b t) c -> b t c", t=T)
-    #     del face_pixel_values_tmp
-    #     self.face_encoder.to(self.main_device)
-    #     motion_vec = self.face_encoder(motion_vec.to(self.face_encoder.dtype))
-    #     self.face_encoder.to(self.offload_device)
-
-    #     B, L, H, C = motion_vec.shape
-    #     pad_face = torch.zeros(B, 1, H, C, device=motion_vec.device, dtype=motion_vec.dtype)
-    #     return torch.cat([pad_face, motion_vec], dim=1)
-
-
-    # def wananimate_forward(self, block, x, motion_vec, strength=1.0, motion_masks=None):
-    #         adapter_args = [x, motion_vec, motion_masks]
-    #         residual_out = block.fuser_block(*adapter_args)
-    #         return x.add(residual_out, alpha=strength)
-
 
     def rope_encode_comfy(self, t, h, w, freq_offset=0, t_start=0, attn_cond_shape=None, steps_t=None, steps_h=None, steps_w=None, ntk_alphas=[1,1,1], device=None, dtype=None):
         patch_size = self.patch_size
@@ -2253,59 +1944,14 @@ class WanModel(torch.nn.Module):
         if is_uncond or current_step > 0: 
             standin_input = None
         
-        # MTV Crafter motion projection
-        # if mtv_motion_tokens is not None:
-        #     bs, motion_seq_len =  mtv_motion_tokens.shape[0], mtv_motion_tokens.shape[1]
-        #     mtv_motion_tokens = torch.cat([mtv_motion_tokens, self.pad_motion_tokens.to(mtv_motion_tokens).expand(bs, motion_seq_len, -1)], dim=-1)
 
         # Fantasy Portrait
         adapter_proj = ip_scale = None
-        # if fantasy_portrait_input is not None:
-        #     if fantasy_portrait_input['start_percent'] <= current_step_percentage <= fantasy_portrait_input['end_percent']:
-        #         adapter_proj = fantasy_portrait_input.get("adapter_proj", None)
-        #         ip_scale = fantasy_portrait_input.get("strength", 1.0)
-
-        # if self.lora_scheduling_enabled:
-        #     for name, submodule in self.named_modules():
-        #         if isinstance(submodule, nn.Linear):
-        #             if hasattr(submodule, 'step'):
-        #                 submodule.step = current_step
 
         # lynx
         lynx_x_ip = lynx_ref_feature = lynx_ref_buffer = lynx_ref_feature_extractor = None
         lynx_ip_scale = lynx_ref_scale = 1.0
-        # if lynx_embeds is not None:
-        #     lynx_ref_feature_extractor = lynx_embeds.get("ref_feature_extractor", False)
-        #     lynx_ref_blocks_to_use = lynx_embeds.get("ref_blocks_to_use", None)
-        #     if lynx_ref_blocks_to_use is None:
-        #         lynx_ref_blocks_to_use = list(range(len(self.blocks)))
-        #     if (lynx_embeds['start_percent'] <= current_step_percentage <= lynx_embeds['end_percent']) and not lynx_ref_feature_extractor:
-        #         if not is_uncond:
-        #             lynx_x_ip = lynx_embeds.get("ip_x", None)
-        #             lynx_ref_buffer = lynx_embeds.get("ref_buffer", None)
-        #         else:
-        #             lynx_x_ip = lynx_embeds.get("ip_x_uncond", None)
-        #             lynx_ref_buffer = lynx_embeds.get("ref_buffer_uncond", None)
-        #         lynx_x_ip = lynx_x_ip.to(self.main_device) if lynx_x_ip is not None else None
-
-        #         lynx_ip_scale = lynx_embeds.get("ip_scale", 1.0)
-        #         lynx_ref_scale = lynx_embeds.get("ref_scale", 1.0)
-                
-
-        #s2v
-        # if self.model_type == 's2v' and s2v_audio_input is not None:
-        #     if is_uncond:
-        #         s2v_audio_input = s2v_audio_input * 0 # to match original code
-        #     s2v_audio_input = torch.cat([s2v_audio_input[..., 0:1].repeat(1, 1, 1, s2v_motion_frames[0]), s2v_audio_input], dim=-1)
-            
-        #     audio_emb_res = self.casual_audio_encoder(s2v_audio_input)
-        #     if self.enable_adain:
-        #         audio_emb_global, audio_emb = audio_emb_res
-        #         self.audio_emb_global = audio_emb_global[:, s2v_motion_frames[1]:].clone()
-        #     else:
-        #         audio_emb = audio_emb_res
-        #     merged_audio_emb = audio_emb[:, s2v_motion_frames[1]:, :]
-
+       
         # params
         device = self.main_device
 
@@ -2322,49 +1968,15 @@ class WanModel(torch.nn.Module):
                         y[0].add_(random_ref_emb, alpha=unianim_data["strength"])
             x = [torch.cat([u, v], dim=0) for u, v in zip(x, y)]
         
-        #uni3c controlnet
-        # if uni3c_data is not None:
-        #     render_latent = uni3c_data["render_latent"].to(self.base_dtype)
-        #     hidden_states = x[0].unsqueeze(0).clone().float()
-        #     if hidden_states.shape[1] == 16: #T2V work around
-        #         hidden_states = torch.cat([hidden_states, torch.zeros_like(hidden_states[:, :4])], dim=1)
-        #     render_latent = torch.cat([hidden_states[:, :20], render_latent], dim=1)
-
         # patch embed
         if control_lora_enabled:
             pass
-            # self.expanded_patch_embedding.to(self.main_device)
-            # x = [self.expanded_patch_embedding(u.unsqueeze(0).to(torch.float32)).to(x[0].dtype) for u in x]
         else:
             self.original_patch_embedding.to(self.main_device)
             x = [self.original_patch_embedding(u.unsqueeze(0).to(torch.float32)).to(x[0].dtype) for u in x]
 
-        # ovi audio model
-        # if self.audio_model is not None:
-        #     x_ovi = [self.audio_model.original_patch_embedding(u.unsqueeze(0).to(torch.float32)).to(x_ovi[0].dtype) for u in x_ovi]
-        #     grid_sizes_ovi = torch.stack([torch.tensor(u.shape[1:2], dtype=torch.long) for u in x_ovi])
-        #     seq_lens_ovi = torch.tensor([u.size(1) for u in x_ovi], dtype=torch.int32)
-        #     x_ovi = torch.cat([torch.cat([u, u.new_zeros(1, seq_len_ovi - u.size(1), u.size(2))], dim=1) for u in x_ovi])    
-        #     d = self.dim // self.num_heads
-        #     freqs_ovi = rope_params(1024, d - 4 * (d // 6), freqs_scaling=0.19676).to(self.main_device)
-        #     x_ovi = x_ovi.to(self.main_device, self.base_dtype)
-
         # WanAnimate
         motion_vec = None
-        # if wananim_face_pixel_values is not None:
-        #     motion_vec = self.wananimate_face_embedding(wananim_face_pixel_values).to(self.base_dtype)
-
-        # if wananim_pose_latents is not None:
-        #     x = self.wananimate_pose_embedding(x, wananim_pose_latents, strength=wananim_pose_strength)
-
-        # s2v pose embedding
-        # if s2v_pose is not None:
-        #     x[0] = x[0] + self.cond_encoder(s2v_pose.to(self.cond_encoder.weight.dtype)).to(self.base_dtype)
-
-        # Fun camera
-        # if self.control_adapter is not None and fun_camera is not None:
-        #     fun_camera = self.control_adapter(fun_camera)
-        #     x = [u + v for u, v in zip(x, fun_camera)]
 
         # grid sizes and seq len
         grid_sizes = torch.stack([torch.tensor(u.shape[2:], device=device, dtype=torch.long) for u in x])
@@ -2375,48 +1987,10 @@ class WanModel(torch.nn.Module):
         assert seq_lens.max() <= seq_len
 
         cond_mask_weight = None
-        # if self.trainable_cond_mask is not None:
-        #     cond_mask_weight = self.trainable_cond_mask.weight.to(x[0]).unsqueeze(1).unsqueeze(1)
-
-        # if add_cond is not None:
-        #     add_cond = self.add_conv_in(add_cond.to(self.add_conv_in.weight.dtype)).to(x[0].dtype)
-        #     add_cond = add_cond.flatten(2).transpose(1, 2)
-        #     x[0] = x[0] + self.add_proj(add_cond)
+       
         attn_cond_shape = None
-        # if attn_cond is not None:
-        #     attn_cond_shape = attn_cond.shape
-        #     grid_sizes = torch.stack([torch.tensor([u[0] + 1, u[1], u[2]]) for u in grid_sizes]).to(grid_sizes.device)
-        #     attn_cond = self.attn_conv_in(attn_cond.to(self.attn_conv_in.weight.dtype)).to(x[0].dtype)
-        #     attn_cond = attn_cond.flatten(2).transpose(1, 2)
-        #     x[0] = torch.cat([x[0], attn_cond], dim=1)
-        #     seq_len += attn_cond.size(1)
-        #     for block in self.blocks:
-        #         block.self_attn.mask_map = MaskMap(video_token_num=seq_len, num_frame=F+1)
-
-        # if self.ref_conv is not None and fun_ref is not None:
-        #     fun_ref = self.ref_conv(fun_ref.to(self.ref_conv.weight.dtype)).flatten(2).transpose(1, 2)
-        #     grid_sizes = torch.stack([torch.tensor([u[0] + 1, u[1], u[2]]) for u in grid_sizes]).to(grid_sizes.device)
-        #     seq_len += fun_ref.size(1)
-        #     F += 1
-        #     x = [torch.cat([_fun_ref.unsqueeze(0), u], dim=1) for _fun_ref, u in zip(fun_ref, x)]
 
         end_ref_latent=None
-        # if s2v_ref_latent is not None:
-        #     end_ref_latent = s2v_ref_latent.squeeze(0)
-        # elif phantom_ref is not None:
-        #     end_ref_latent = phantom_ref
-        #     F += end_ref_latent.size(1)
-        # if end_ref_latent is not None:
-        #     end_ref_latent_frames = end_ref_latent.size(1)
-        #     end_ref_latent = self.original_patch_embedding(end_ref_latent.unsqueeze(0).to(torch.float32)).to(x[0].dtype)
-        #     end_ref_latent = end_ref_latent.flatten(2).transpose(1, 2)
-        #     if cond_mask_weight is not None:
-        #         end_ref_latent = end_ref_latent + cond_mask_weight[1]
-        #     grid_sizes = torch.stack([torch.tensor([u[0] + end_ref_latent_frames, u[1], u[2]]) for u in grid_sizes]).to(grid_sizes.device)
-        #     end_ref_latent_seq_len = end_ref_latent.size(1)
-        #     seq_len += end_ref_latent_seq_len
-        #     x = [torch.cat([u, end_ref_latent.unsqueeze(0)], dim=1) for end_ref_latent, u in zip(end_ref_latent, x)]
-
         
         x = torch.cat([torch.cat([u, u.new_zeros(1, seq_len - u.size(1), u.size(2))], dim=1) for u in x])
 
@@ -2426,16 +2000,6 @@ class WanModel(torch.nn.Module):
         # StandIn LoRA input
         x_ip = None
         freq_offset = 0
-        # if standin_input is not None:
-        #     ip_image = standin_input["ip_image_latent"]
-
-        #     if ip_image.dim() == 6 and ip_image.shape[3] == 1:
-        #         ip_image = ip_image.squeeze(1)
-
-        #     ip_image_patch = self.original_patch_embedding(ip_image.to(x.device).float()).to(self.base_dtype)
-        #     f_ip, h_ip, w_ip = ip_image_patch.shape[2:]
-        #     x_ip = ip_image_patch.flatten(2).transpose(1, 2)  # [B, N, D]
-        #     freq_offset = standin_input["freq_offset"]
 
         if freqs is None and "comfy" in self.rope_func: #comfy rope
             current_shape = (F, H, W)
@@ -2465,39 +2029,16 @@ class WanModel(torch.nn.Module):
                 self.cached_rope_k = self.rope_embedder.k
                 self.cached_ntk_alphas = ntk_alphas
 
-        # Stand-In RoPE frequencies
-        # if x_ip is not None:
-        #     # Generate RoPE frequencies for x_ip
-        #     h_len = (H + 1) // 2
-        #     w_len = (W + 1) // 2
-        #     ip_img_ids = torch.zeros((f_ip, h_ip, w_ip, 3), device=x.device, dtype=x.dtype)
-        #     ip_img_ids[:, :, :, 0] = ip_img_ids[:, :, :, 0] + torch.linspace(0, f_ip - 1, steps=f_ip, device=x.device, dtype=x.dtype).reshape(-1, 1, 1)
-        #     ip_img_ids[:, :, :, 1] = ip_img_ids[:, :, :, 1] + torch.linspace(h_len + freq_offset, h_len + freq_offset + h_ip - 1, steps=h_ip, device=x.device, dtype=x.dtype).reshape(1, -1, 1)
-        #     ip_img_ids[:, :, :, 2] = ip_img_ids[:, :, :, 2] + torch.linspace(w_len + freq_offset, w_len + freq_offset + w_ip - 1, steps=w_ip, device=x.device, dtype=x.dtype).reshape(1, 1, -1)
-        #     ip_img_ids = repeat(ip_img_ids, "t h w c -> b (t h w) c", b=1)
-        #     freqs_ip = self.rope_embedder(ip_img_ids).movedim(1, 2)
 
         # EchoShot cross attn freqs
         inner_c = None
-        # if inner_t is not None:
-        #     d = self.dim // self.num_heads
-        #     self.cross_freqs = rope_params(100, d).to(device=x.device)
-
-        # if s2v_ref_motion is not None:
-        #     motion_encoded, freqs_motion = self.frame_packer(s2v_ref_motion, self)
-        #     motion_encoded = motion_encoded + cond_mask_weight[2]
-        #     x = torch.cat([x, motion_encoded], dim=1)
-        #     freqs = torch.cat([freqs, freqs_motion], dim=1)
 
         # time embeddings
-        if t.dim() == 2 and not self.is_longcat:
+        if t.dim() == 2:
             b, f = t.shape
             expanded_timesteps = True
         else:
             expanded_timesteps = False
-
-        if self.zero_timestep:
-            t = torch.cat([t, torch.zeros([1], dtype=t.dtype, device=t.device)])
 
         if hasattr(self, "time_projection"):
             time_embed_dtype = self.time_embedding[0].weight.dtype
@@ -2505,68 +2046,6 @@ class WanModel(torch.nn.Module):
                 time_embed_dtype = self.base_dtype
             e = self.time_embedding(sinusoidal_embedding_1d(self.freq_dim, t.flatten()).to(time_embed_dtype))  # b, dim
             e0 = self.time_projection(e).unflatten(1, (6, self.dim))  # b, 6, dim
-        # else:
-        #     time_embed_dtype = self.time_embedding.mlp[0].weight.dtype
-        #     if time_embed_dtype not in [torch.float16, torch.bfloat16, torch.float32]:
-        #         time_embed_dtype = self.base_dtype
-        #     if len(t.shape) == 1:
-        #         t = t.unsqueeze(1).expand(-1, F) # [B, T]
-        #     self.time_embedding.to(torch.float32)
-        #     e = e0 = self.time_embedding(t.float().flatten(), dtype=torch.float32).reshape(1, F, -1)
-
-
-        # if self.audio_model is not None:
-        #     #if t.dim() == 1:
-        #     #    t_ovi = t.unsqueeze(1).expand(t.size(0), seq_len_ovi)
-        #     if t.dim() == 2:
-        #         last_timestep = t[:, -1:]
-        #         padding = last_timestep.expand(t.size(0), seq_len_ovi - t.size(1))
-        #         t_ovi = torch.cat([t, padding], dim=1)
-            
-        #         e_ovi = self.audio_model.time_embedding(sinusoidal_embedding_1d(self.audio_model.freq_dim, t_ovi.flatten()).to(time_embed_dtype)).unsqueeze(0)  # b, dim
-        #         e0_ovi = self.audio_model.time_projection(e_ovi).unflatten(2, (6, self.dim)).movedim(1, 2)  # B, seq_len, 6, dim
-        #     else:
-        #         e_ovi = self.audio_model.time_embedding(sinusoidal_embedding_1d(self.audio_model.freq_dim, t.flatten()).to(time_embed_dtype))  # b, dim
-        #         e0_ovi = self.audio_model.time_projection(e_ovi).unflatten(1, (6, self.dim))  # b, 6, dim
-
-
-        #S2V zero timestep
-        # if self.zero_timestep:
-        #     e = e[:-1]
-        #     zero_e0 = e0[-1:]
-        #     e0 = e0[:-1]
-        #     e0 = torch.cat([
-        #         e0.unsqueeze(2),
-        #         zero_e0.unsqueeze(2).repeat(e0.size(0), 1, 1, 1)
-        #     ], dim=2)
-        #     e0 = [e0, self.original_seq_len]
-
-        # if x_ip is not None:
-        #     timestep_ip = torch.zeros_like(t)  # [B] with 0s
-        #     t_ip = self.time_embedding(sinusoidal_embedding_1d(self.freq_dim, timestep_ip.flatten()).to(time_embed_dtype))  # b, dim )
-        #     e0_ip = self.time_projection(t_ip).unflatten(1, (6, self.dim))
-
-        # if fps_embeds is not None:
-        #     fps_embeds = torch.tensor(fps_embeds, dtype=torch.long, device=device)
-
-        #     fps_emb = self.fps_embedding(fps_embeds).to(e0.dtype)
-        #     if expanded_timesteps:
-        #         e0 = e0 + self.fps_projection(fps_emb).unflatten(1, (6, self.dim)).repeat(t.shape[1], 1, 1)
-        #     else:
-        #         e0 = e0 + self.fps_projection(fps_emb).unflatten(1, (6, self.dim))
-
-        # if expanded_timesteps:
-        #     e = e.view(b, f, 1, 1, self.dim).expand(b, f, grid_sizes[0][1], grid_sizes[0][2], self.dim)
-        #     e0 = e0.view(b, f, 1, 1, 6, self.dim).expand(b, f, grid_sizes[0][1], grid_sizes[0][2], 6, self.dim)
-            
-        #     e = e.flatten(1, 3)
-        #     e0 = e0.flatten(1, 3)
-            
-        #     e0 = e0.transpose(1, 2)
-        #     if not e0.is_contiguous():
-        #         e0 = e0.contiguous()
-            
-        #     e = e.to(self.offload_device, non_blocking=self.use_non_blocking)
 
         # clip vision embedding
         clip_embed = None
@@ -2609,9 +2088,6 @@ class WanModel(torch.nn.Module):
                 context = torch.cat([add_text_emb, context], dim=1)
             context = self.text_embedding(context)
 
-            if self.is_longcat:
-                context[:, tokens:] = 0
-
             # NAG
             if nag_context is not None:
                 nag_context = self.text_embedding(
@@ -2653,23 +2129,8 @@ class WanModel(torch.nn.Module):
 
         # convert ref_target_masks to token_ref_target_masks
         token_ref_target_masks = None
-        # if ref_target_masks is not None:
-        #     ref_target_masks = ref_target_masks.unsqueeze(0).to(torch.float32) 
-        #     token_ref_target_masks = nn.functional.interpolate(ref_target_masks, size=(H // 2, W // 2), mode='nearest') 
-        #     token_ref_target_masks = token_ref_target_masks.squeeze(0)
-        #     token_ref_target_masks = (token_ref_target_masks > 0)
-        #     token_ref_target_masks = token_ref_target_masks.view(token_ref_target_masks.shape[0], -1) 
-        #     token_ref_target_masks = token_ref_target_masks.to(device, self.base_dtype)
-
+       
         humo_audio_input = None
-        # if humo_audio is not None:
-        #     humo_audio_input = self.audio_proj(humo_audio.unsqueeze(0)).permute(0, 3, 1, 2)
-
-        #     humo_audio_seq_len = torch.tensor(humo_audio.shape[2] * humo_audio_input.shape[3], device=device)
-        #     humo_audio_input = humo_audio_input.flatten(2).transpose(1, 2) # 1, t*32, 1536
-        #     pad_len = int(humo_audio_seq_len - humo_audio_input.size(1))
-        #     if pad_len > 0:
-        #         humo_audio_input = torch.nn.functional.pad(humo_audio_input, (0, 0, 0, pad_len))
 
         should_calc = True
         #TeaCache
@@ -2845,58 +2306,16 @@ class WanModel(torch.nn.Module):
                 lynx_ref_scale=lynx_ref_scale,
                 num_cond_latents=num_cond_latents
             )
-            # if self.audio_model is not None:
-            #     kwargs['e_ovi'] = e0_ovi.to(self.base_dtype)
-            #     kwargs['context_ovi'] = context_ovi
-            #     kwargs['grid_sizes_ovi'] = grid_sizes_ovi
-            #     kwargs['seq_lens_ovi'] = seq_lens_ovi
-            #     kwargs['freqs_ovi'] = freqs_ovi
-
-            
-            # if vace_data is not None:
-            #     vace_hint_list = []
-            #     vace_scale_list = []
-            #     if isinstance(vace_data[0], dict):
-            #         for data in vace_data:
-            #             if (data["start"] <= current_step_percentage <= data["end"]) or \
-            #                 (data["end"] > 0 and current_step == 0 and current_step_percentage >= data["start"]):
-
-            #                 vace_hints = self.forward_vace(x, data["context"], data["seq_len"], kwargs)
-            #                 vace_hint_list.append(vace_hints)
-            #                 vace_scale_list.append(data["scale"][current_step])
-            #     else:
-            #         vace_hints = self.forward_vace(x, vace_data, seq_len, kwargs)
-            #         vace_hint_list.append(vace_hints)
-            #         vace_scale_list.append(1.0)
-                
-            #     kwargs['vace_hints'] = vace_hint_list
-            #     kwargs['vace_context_scale'] = vace_scale_list
 
             #uni3c controlnet
             uni3c_controlnet_states = None
-            # if uni3c_data is not None:
-            #     if (uni3c_data["start"] <= current_step_percentage <= uni3c_data["end"]) or \
-            #                 (uni3c_data["end"] > 0 and current_step == 0 and current_step_percentage >= uni3c_data["start"]):
-            #         self.controlnet.to(self.main_device)
-            #         with torch.autocast(device_type=mm.get_autocast_device(device), dtype=self.base_dtype, enabled=True):
-            #             uni3c_controlnet_states = self.controlnet(
-            #                 render_latent=render_latent.to(self.main_device, self.controlnet.dtype), 
-            #                 render_mask=uni3c_data["render_mask"], 
-            #                 camera_embedding=uni3c_data["camera_embedding"], 
-            #                 temb=e.to(self.main_device),
-            #                 device=self.offload_device)
-            #         self.controlnet.to(self.offload_device)
 
             # Asynchronous block offloading with CUDA streams and events
             if torch.cuda.is_available():
                 cuda_stream = None #torch.cuda.Stream(device=device, priority=0) # todo causes issues on some systems
                 events = [torch.cuda.Event() for _ in self.blocks]
                 swap_start_idx = len(self.blocks) - self.blocks_to_swap if self.blocks_to_swap > 0 else len(self.blocks)
-            # else:
-            #     cuda_stream = None
-            #     events = None
-            #     swap_start_idx = len(self.blocks)
-
+           
             # lynx ref
             if lynx_ref_buffer is None and lynx_ref_feature_extractor:
                 lynx_ref_buffer = {}
@@ -2929,44 +2348,11 @@ class WanModel(torch.nn.Module):
                         if not events[b].query():
                             events[b].synchronize()
                     block.to(self.main_device)
-                # if self.block_swap_debug:
-                #     transfer_end = time.perf_counter()
-                #     transfer_time = transfer_end - transfer_start
-                #     compute_start = time.perf_counter()
-                #skip layer guidance
-                # if self.slg_blocks is not None:
-                #     if b in self.slg_blocks and is_uncond:
-                #         if self.slg_start_percent <= current_step_percentage <= self.slg_end_percent:
-                #             continue
+               
                 x, x_ip, lynx_ref_feature, x_ovi = block(x, x_ip=x_ip, lynx_ref_feature=lynx_ref_feature, x_ovi=x_ovi, **kwargs) #run block
-                # if self.audio_injector is not None and s2v_audio_input is not None:
-                #     x = self.audio_injector_forward(b, x, merged_audio_emb, scale=s2v_audio_scale) #s2v
-                # if block.has_face_fuser_block and motion_vec is not None:
-                #     x = self.wananimate_forward(block, x, motion_vec, strength=wananim_face_strength)
-                # if self.block_swap_debug:
-                #     compute_end = time.perf_counter()
-                #     compute_time = compute_end - compute_start
-                #     to_cpu_transfer_start = time.perf_counter()
+                
                 if b >= swap_start_idx and self.blocks_to_swap > 0:
                     block.to(self.offload_device, non_blocking=self.use_non_blocking)
-                # if self.block_swap_debug:
-                #     to_cpu_transfer_end = time.perf_counter()
-                #     to_cpu_transfer_time = to_cpu_transfer_end - to_cpu_transfer_start
-                #     log.info(f"Block {b}: transfer_time={transfer_time:.4f}s, compute_time={compute_time:.4f}s, to_cpu_transfer_time={to_cpu_transfer_time:.4f}s")
-                # lynx ref
-                # if lynx_ref_feature_extractor:
-                #     if b in lynx_ref_blocks_to_use:
-                #         log.info(f"storing to lynx ref buffer for block {block_idx}")
-                #         lynx_ref_buffer[block_idx] = lynx_ref_feature
-                #uni3c controlnet
-                # if uni3c_controlnet_states is not None and b < len(uni3c_controlnet_states):
-                #     x[:, :self.original_seq_len] += uni3c_controlnet_states[b].to(x) * uni3c_data["controlnet_weight"]
-                #controlnet
-                # if (controlnet is not None) and (b % controlnet["controlnet_stride"] == 0) and (b // controlnet["controlnet_stride"] < len(controlnet["controlnet_states"])):
-                #     x[:, :self.original_seq_len] += controlnet["controlnet_states"][b // controlnet["controlnet_stride"]].to(x) * controlnet["controlnet_weight"]
-
-            # if lynx_ref_feature_extractor:
-            #     return lynx_ref_buffer
 
             if self.enable_teacache and (self.teacache_start_step <= current_step <= self.teacache_end_step) and pred_id is not None:
                 self.teacache_state.update(
@@ -3021,33 +2407,11 @@ class WanModel(torch.nn.Module):
 
         x = self.head(x, e.to(x.device), temp_length=F)
 
-        # if x_ovi is not None:
-        #     x_ovi = self.audio_model.head(x_ovi, e_ovi.to(x_ovi.device))
-        #     grid_sizes_ovi = [gs[0] for gs in grid_sizes_ovi]
-        #     assert len(x) == len(grid_sizes_ovi)
-        #     x_ovi = [u[:gs] for u, gs in zip(x_ovi, grid_sizes_ovi)]
-        #     x_ovi = [u.float() for u in x_ovi]
-       
         x = self.unpatchify(x, original_grid_sizes) # type: ignore[arg-type]
         x = [u.float() for u in x]
         return (x, x_ovi, pred_id) if pred_id is not None else (x, x_ovi, None)
 
     def unpatchify(self, x, grid_sizes):
-        r"""
-        Reconstruct video tensors from patch embeddings.
-
-        Args:
-            x (List[Tensor]):
-                List of patchified features, each with shape [L, C_out * prod(patch_size)]
-            grid_sizes (Tensor):
-                Original spatial-temporal grid dimensions before patching,
-                    shape [B, 3] (3 dimensions correspond to F_patches, H_patches, W_patches)
-
-        Returns:
-            List[Tensor]:
-                Reconstructed video tensors with shape [C_out, F, H / 8, W / 8]
-        """
-
         c = self.out_dim
         out = []
         for u, v in zip(x, grid_sizes.tolist()):

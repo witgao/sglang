@@ -30,8 +30,10 @@ class WanSamplerStage(PipelineStage):
                 "prompt_embeds": batch.prompt_embeds[0],
                 "negative_prompt_embeds": batch.negative_prompt_embeds[0],
             }
+            image_embeds = batch.image_latent2
+            audio_embeds = batch.audio_embeds
             sampler_result = wan_sampler(self.transformer, text_embeds=text_embeds,
-                                     image_embeds=batch.image_latent2, multitalk_embeds=batch.audio_embeds)
-        
+                                     image_embeds=image_embeds, multitalk_embeds=audio_embeds)
+
         batch.samples = sampler_result[0]
         return batch
