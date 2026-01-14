@@ -3,8 +3,7 @@ from sglang.multimodal_gen.runtime.pipelines_core.stages.base import PipelineSta
 from sglang.multimodal_gen.runtime.server_args import ServerArgs
 from sglang.multimodal_gen.runtime.pipelines_core.schedule_batch import Req
 
-from sglang.multimodal_gen.runtime.models.dits.wanvideo import WanTransformer3DModel
-from sglang.multimodal_gen.runtime.managers.forward_context import set_forward_context
+from sglang.multimodal_gen.runtime.models.original import OriginalWanTransformerModel
 
 from sglang.multimodal_gen.runtime.utils.model_utils import ModelUtils
 
@@ -12,7 +11,6 @@ import os
 import gc
 from tqdm import tqdm
 from sglang.multimodal_gen.runtime.models.original.wanvideo.schedulers import get_scheduler
-from sglang.multimodal_gen.utils import dict_to_3d_list, masks_like
 
 from contextlib import nullcontext
 
@@ -23,7 +21,7 @@ VAE_STRIDE = (4, 8, 8)
 PATCH_SIZE = (1, 2, 2)
 
 def offload_transformer(transformer):
-    if getattr(transformer, "patched_linear", False):
+    if transformer.patched_linear:
         for name, param in transformer.named_parameters():
             if "loras" in name or "controlnet" in name:
                 continue
@@ -83,7 +81,7 @@ def get_vae_shift_scale(vae, device, dtype):
 
 class WanSamplerStage(PipelineStage):
     def __init__(
-        self, transformer: WanTransformer3DModel
+        self, transformer: OriginalWanTransformerModel
     ):
         super().__init__()
         self.transformer = transformer
@@ -112,7 +110,7 @@ class WanSamplerStage(PipelineStage):
 
     def process(self, transformer, text_embeds, image_embeds, multitalk_embeds):
         # transformer推理的dtype
-        dtype = torch.bfloat16
+        dtype = transformer.base_dtype
         rope_function = "comfy"
         device = torch.device(torch.cuda.current_device())
         offload_device = torch.device("cpu")
@@ -142,15 +140,15 @@ class WanSamplerStage(PipelineStage):
         audio_embedding = [emb.to(device, dtype) for emb in audio_features_in]
 
         # TODO
-        # transformer.slg_blocks = None
-        # transformer.video_attention_split_steps = []
-        # transformer.rope_embedder.k = None
-        # transformer.rope_embedder.num_frames = None
-        # transformer.rope_embedder.k = riflex_freq_index
-        # transformer.rope_embedder.num_frames = latent_frame_num
-        # transformer.rope_func = rope_function
-        # for block in transformer.blocks:
-        #     block.rope_func = rope_function
+        transformer.slg_blocks = None
+        transformer.video_attention_split_steps = []
+        transformer.rope_embedder.k = None
+        transformer.rope_embedder.num_frames = None
+        transformer.rope_embedder.k = riflex_freq_index
+        transformer.rope_embedder.num_frames = latent_frame_num
+        transformer.rope_func = rope_function
+        for block in transformer.blocks:
+            block.rope_func = rope_function
         
         # 滑动窗口大小，每次生成一个clip
         motion_frame = image_embeds.get("motion_frame", 25)
@@ -197,8 +195,6 @@ class WanSamplerStage(PipelineStage):
         # 如果总帧数小于clip大小，则标记结束
         if frame_num >= total_frames:
             arrive_last_frame = True
-
-        # transformer.to(device=device, dtype=dtype)
         
         # 开始根据音频循环生成
         while True:  # start video generation iteratively
@@ -212,13 +208,6 @@ class WanSamplerStage(PipelineStage):
                                                                           is_first_clip, cond_frame, vae)
         
             # 创建schedule
-            transformer_dim = getattr(
-                transformer, "dim", getattr(transformer, "hidden_size", None)
-            )
-            if transformer_dim is None and hasattr(transformer, "config"):
-                transformer_dim = getattr(transformer.config, "hidden_size", None)
-            if transformer_dim is None:
-                transformer_dim = 5120
             sample_scheduler, timesteps, _, _ = get_scheduler(
                 scheduler,
                 steps,
@@ -226,7 +215,7 @@ class WanSamplerStage(PipelineStage):
                 -1,
                 shift,
                 device,
-                transformer_dim,
+                transformer.dim,
                 None,
                 1.0,
                 sigmas=None,
@@ -355,7 +344,7 @@ class WanSamplerStage(PipelineStage):
             latent_frame_num,
             lat_h,
             lat_w,
-            dtype=dtype,
+            dtype=torch.float32,
             device=torch.device("cpu"),
             generator=seed_g,
         ).to(device)
@@ -451,46 +440,34 @@ class WanSamplerStage(PipelineStage):
             # if autocast_enabled
             nullcontext()
         ):
+            image_cond_input = image_cond.to(z)
+
+            multitalk_audio_input = multitalk_audio_embeds
+
+            base_params = {
+                "x": [z],  # latent
+                "t": timestep,  # current timestep
+                "seq_len": seq_len,  # sequence length
+                "clip_fea": clip_fea,  # clip features
+                "y": [image_cond_input],
+                "nag_params": text_embeds.get(
+                    "nag_params", {}
+                ),  # normalized attention guidance
+                "nag_context": text_embeds.get(
+                    "nag_prompt_embeds", None
+                ),  # normalized attention guidance context
+                "multitalk_audio": multitalk_audio_input,
+                "ntk_alphas": [1.0, 1.0, 1.0],  # RoPE freq scaling values
+            }
+
             try:
-                timestep_value = int(timestep.item()) if torch.is_tensor(timestep) else int(timestep)
-                prompt_embeds = text_embeds["prompt_embeds"]
-                if isinstance(prompt_embeds, list):
-                    prompt_embeds = prompt_embeds[0]
-                if prompt_embeds.dim() == 2:
-                    prompt_embeds = prompt_embeds.unsqueeze(0)
-                
-                prompt_embeds = prompt_embeds.to(z.device, z.dtype)
-
-                latent_model_input = z
-                if image_cond is not None:
-                    image_cond_input = image_cond.to(z)
-                    latent_model_input = torch.cat(
-                        [latent_model_input, image_cond_input], dim=0
-                    )
-                latent_model_input = latent_model_input.unsqueeze(0)
-
-                # latent_model_input = self.scheduler.scale_model_input(
-                #             latent_model_input, timestep_value
-                # )
-                
-                encoder_hidden_states_image = clip_fea
-                encoder_hidden_states_image = encoder_hidden_states_image.to(
-                    z.device, z.dtype
+                noise_pred_cond, noise_pred_ovi, cache_state_cond = transformer(
+                    context=text_embeds["prompt_embeds"],
+                    **base_params,
                 )
-                encoder_hidden_states_image = [encoder_hidden_states_image]
-
-                with set_forward_context(
-                    current_timestep=timestep_value, attn_metadata=None, forward_batch=None
-                ):
-                    noise_pred = transformer(
-                        hidden_states=latent_model_input,
-                        encoder_hidden_states=[prompt_embeds],
-                        timestep=timestep,
-                        guidance=None,
-                        encoder_hidden_states_image=encoder_hidden_states_image,
-                        mask_strategy=dict_to_3d_list(None, t_max=50, l_max=60, h_max=24),
-                    )
-                return noise_pred[0], None, [None]
+                noise_pred_cond = noise_pred_cond[0]
+               
+                return noise_pred_cond, None, [None]
             except Exception as e:
                 # offload_transformer(transformer)
                 raise e

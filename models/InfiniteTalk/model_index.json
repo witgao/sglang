@@ -30,7 +30,7 @@
     "AutoencoderKLWan"
   ],
   "transformer": [
-    "diffusers",
-    "WanTransformer3DModel"
+    "original",
+    "OriginalWanTransformerModel"
   ]
 }
