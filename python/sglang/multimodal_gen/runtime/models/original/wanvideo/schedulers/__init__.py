@@ -7,13 +7,8 @@ from .flowmatch_res_multistep import FlowMatchSchedulerResMultistep
 from .scheduling_flow_match_lcm import FlowMatchLCMScheduler
 from .fm_sa_ode import FlowMatchSAODEStableScheduler
 from .fm_rcm import rCMFlowMatchScheduler
-from ...utils import log
+from diffusers.schedulers import FlowMatchEulerDiscreteScheduler, DEISMultistepScheduler
 
-try:
-    from diffusers.schedulers import FlowMatchEulerDiscreteScheduler, DEISMultistepScheduler
-except ImportError:
-    FlowMatchEulerDiscreteScheduler = None
-    DEISMultistepScheduler = None
 
 scheduler_list = [
     "unipc", "unipc/beta",
@@ -135,10 +130,6 @@ def get_scheduler(scheduler, steps, start_step, end_step, shift, device, transfo
     start_idx = 0
     end_idx = len(timesteps) - 1
 
-    if log_timesteps:
-        log.info(f"------- Scheduler info -------")
-        log.info(f"Total timesteps: {timesteps}")
-
     if isinstance(start_step, float):
         idxs = (sample_scheduler.sigmas <= start_step).nonzero(as_tuple=True)[0]
         if len(idxs) > 0:
@@ -160,11 +151,6 @@ def get_scheduler(scheduler, steps, start_step, end_step, shift, device, transfo
     timesteps = timesteps[start_idx:end_idx+1]
     sample_scheduler.full_sigmas = sample_scheduler.sigmas.clone()
     sample_scheduler.sigmas = sample_scheduler.sigmas[start_idx:start_idx+len(timesteps)+1]  # always one longer
-
-    if log_timesteps:
-        log.info(f"Using timesteps: {timesteps}")
-        log.info(f"Using sigmas: {sample_scheduler.sigmas}")
-        log.info(f"------------------------------")
 
     if hasattr(sample_scheduler, 'timesteps'):
         sample_scheduler.timesteps = timesteps

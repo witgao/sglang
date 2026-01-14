@@ -17,9 +17,9 @@ class OutputStage(PipelineStage):
         images = batch.images
         output_path = batch.output_path
         combine = VideoCombine()
-        combine.combine_video(frame_rate=25, loop_count=0, images=images, filename_prefix="ditflow", format="video/h264-mp4",  pix_fmt="yuv420p",
-                                 crf=19, save_metadata=False, save_output_path=output_path)
-        
+        result = combine.combine_video(frame_rate=25, loop_count=0, images=images, filename_prefix="ditflow", format="video/h264-mp4",  pix_fmt="yuv420p",
+                                 crf=19, save_metadata=False, save_output_path=output_path)["result"]
+        print(f"Saved output video to {result[0][1]}")
         output_batch = OutputBatch(
             output=[],
             trajectory_timesteps=batch.trajectory_timesteps,

@@ -12,10 +12,6 @@ from sglang.multimodal_gen.runtime.utils.model_utils import ModelUtils
 
 from accelerate import init_empty_weights
 
-import math
-from tqdm import tqdm
-import logging
-import os
 
 class OriginalInfiniteTalkModel(nn.Module, FromOriginalModelMixin):
 
@@ -102,13 +98,6 @@ class OriginalInfiniteTalkModel(nn.Module, FromOriginalModelMixin):
                     context_tokens=context_tokens,
                     norm_output_audio=norm_output_audio,
             )
-
-        multitalk = {
-            "proj_model": multitalk_proj_model,
-            "model_path": model_path,
-            "model_type": "InfiniteTalk",
-        }
-
-        return multitalk
+        return multitalk_proj_model
 
 EntryClass = [OriginalInfiniteTalkModel]

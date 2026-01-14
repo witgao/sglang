@@ -19,7 +19,7 @@ class InputStage(PipelineStage):
             image, mask = ImageUtils.load(image_path)
             batch.condition_image = image
 
-            if batch.width != None and batch.height != None:
+            if batch.width is not None and batch.height is not None:
                 image, width, height, mask = ImageUtils.resize(image=image, width=batch.width, height=batch.height, keep_proportion="pad",
                                                                upscale_method="lanczos", divisible_by=0, pad_color="0, 0, 0",
                                                                crop_position="center", device="cpu")

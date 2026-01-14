@@ -26,11 +26,11 @@
     "T5TokenizerFast"
   ],
   "vae": [
-    "original",
-    "OriginalWanVAEModel"
+    "diffusers",
+    "AutoencoderKLWan"
   ],
   "transformer": [
-    "original",
-    "OriginalWanTransformerModel"
+    "diffusers",
+    "WanTransformer3DModel"
   ]
 }

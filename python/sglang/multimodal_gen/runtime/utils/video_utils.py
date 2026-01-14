@@ -14,7 +14,6 @@ from string import Template
 import itertools
 import functools
 import logging
-import sglang.comfy.folder_paths as folder_paths
 
 base_formats_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "video_formats")
 
@@ -79,43 +78,6 @@ def ffmpeg_process(args, video_format, video_metadata, file_path, env):
     res = None
     frame_data = yield
     total_frames_output = 0
-    if video_format.get('save_metadata', 'False') != 'False':
-        os.makedirs(folder_paths.get_temp_directory(), exist_ok=True)
-        metadata = json.dumps(video_metadata)
-        metadata_path = os.path.join(folder_paths.get_temp_directory(), "metadata.txt")
-        #metadata from file should  escape = ; # \ and newline
-        metadata = metadata.replace("\\","\\\\")
-        metadata = metadata.replace(";","\\;")
-        metadata = metadata.replace("#","\\#")
-        metadata = metadata.replace("=","\\=")
-        metadata = metadata.replace("\n","\\\n")
-        metadata = "comment=" + metadata
-        with open(metadata_path, "w") as f:
-            f.write(";FFMETADATA1\n")
-            f.write(metadata)
-        m_args = args[:1] + ["-i", metadata_path] + args[1:] + ["-metadata", "creation_time=now"]
-        with subprocess.Popen(m_args + [file_path], stderr=subprocess.PIPE,
-                              stdin=subprocess.PIPE, env=env) as proc:
-            try:
-                while frame_data is not None:
-                    proc.stdin.write(frame_data)
-                    #TODO: skip flush for increased speed
-                    frame_data = yield
-                    total_frames_output+=1
-                proc.stdin.flush()
-                proc.stdin.close()
-                res = proc.stderr.read()
-            except BrokenPipeError as e:
-                err = proc.stderr.read()
-                #Check if output file exists. If it does, the re-execution
-                #will also fail. This obscures the cause of the error
-                #and seems to never occur concurrent to the metadata issue
-                if os.path.exists(file_path):
-                    raise Exception("An error occurred in the ffmpeg subprocess:\n" \
-                            + err.decode(*ENCODE_ARGS))
-                #Res was not set
-                print(err.decode(*ENCODE_ARGS), end="", file=sys.stderr)
-                logging.warn("An error occurred when saving with metadata")
     if res != b'':
         with subprocess.Popen(args + [file_path], stderr=subprocess.PIPE,
                               stdin=subprocess.PIPE, env=env) as proc:
@@ -138,8 +100,6 @@ def ffmpeg_process(args, video_format, video_metadata, file_path, env):
 def apply_format_widgets(format_name, kwargs):
     if os.path.exists(os.path.join(base_formats_dir, format_name + ".json")):
         video_format_path = os.path.join(base_formats_dir, format_name + ".json")
-    else:
-        video_format_path = folder_paths.get_full_path("VHS_video_formats", format_name)
     with open(video_format_path, 'r') as stream:
         video_format = json.load(stream)
     for w in iterate_format(video_format):
@@ -171,41 +131,6 @@ def apply_format_widgets(format_name, kwargs):
     return video_format
 
 class VideoCombine:
-    # @classmethod
-    # def INPUT_TYPES(s):
-    #     ffmpeg_formats, format_widgets = get_video_formats()
-    #     format_widgets["image/webp"] = [['lossless', "BOOLEAN", {'default': True}]]
-    #     return {
-    #         "required": {
-    #             "images": (imageOrLatent,),
-    #             "frame_rate": (
-    #                 floatOrInt,
-    #                 {"default": 8, "min": 1, "step": 1},
-    #             ),
-    #             "loop_count": ("INT", {"default": 0, "min": 0, "max": 100, "step": 1}),
-    #             "filename_prefix": ("STRING", {"default": "AnimateDiff"}),
-    #             "format": (["image/gif", "image/webp"] + ffmpeg_formats, {'formats': format_widgets}),
-    #             "pingpong": ("BOOLEAN", {"default": False}),
-    #             "save_output": ("BOOLEAN", {"default": True}),
-    #         },
-    #         "optional": {
-    #             "audio": ("AUDIO",),
-    #             "meta_batch": ("VHS_BatchManager",),
-    #             "vae": ("VAE",),
-    #         },
-    #         "hidden": ContainsAll({
-    #             "prompt": "PROMPT",
-    #             "extra_pnginfo": "EXTRA_PNGINFO",
-    #             "unique_id": "UNIQUE_ID"
-    #         }),
-    #     }
-
-    # RETURN_TYPES = ("VHS_FILENAMES",)
-    # RETURN_NAMES = ("Filenames",)
-    # OUTPUT_NODE = True
-    # CATEGORY = "Video Helper Suite 🎥🅥🅗🅢"
-    # FUNCTION = "combine_video"
-
     def combine_video(
         self,
         frame_rate: int,
@@ -225,68 +150,25 @@ class VideoCombine:
         vae=None,
         **kwargs
     ):
-        if latents is not None:
-            images = latents
-        # if images is None:
-        #     return ((save_output, []),)
-        if vae is not None:
-            if isinstance(images, dict):
-                images = images['samples']
-            else:
-                vae = None
-
-        # if isinstance(images, torch.Tensor) and images.size(0) == 0:
-        #     return ((save_output, []),)
+       
         num_frames = len(images)
-        # pbar = ProgressBar(num_frames)
-        if vae is not None:
-            downscale_ratio = getattr(vae, "downscale_ratio", 8)
-            width = images.size(-1)*downscale_ratio
-            height = images.size(-2)*downscale_ratio
-            frames_per_batch = (1920 * 1080 * 16) // (width * height) or 1
-            #Python 3.12 adds an itertools.batched, but it's easily replicated for legacy support
-            def batched(it, n):
-                while batch := tuple(itertools.islice(it, n)):
-                    yield batch
-            def batched_encode(images, vae, frames_per_batch):
-                for batch in batched(iter(images), frames_per_batch):
-                    image_batch = torch.from_numpy(np.array(batch))
-                    yield from vae.decode(image_batch)
-            images = batched_encode(images, vae, frames_per_batch)
-            first_image = next(images)
-            #repush first_image
-            images = itertools.chain([first_image], images)
-            #A single image has 3 dimensions. Discard higher dimensions
-            while len(first_image.shape) > 3:
-                first_image = first_image[0]
-        else:
-            first_image = images[0]
-            images = iter(images)
+       
+        first_image = images[0]
+        images = iter(images)
         # get output information
         output_dir = (
             save_output_path
         )
-        (
-            full_output_folder,
-            filename,
-            _,
-            subfolder,
-            _,
-        ) = folder_paths.get_save_image_path(filename_prefix, output_dir)
+       
+        full_output_folder = output_dir
+        filename = filename_prefix
+        
         output_files = []
 
         metadata = PngInfo()
         video_metadata = {}
-        if prompt is not None:
-            metadata.add_text("prompt", json.dumps(prompt))
-            video_metadata["prompt"] = json.dumps(prompt)
-        if extra_pnginfo is not None:
-            for x in extra_pnginfo:
-                metadata.add_text(x, json.dumps(extra_pnginfo[x]))
-                video_metadata[x] = extra_pnginfo[x]
-            extra_options = extra_pnginfo.get('workflow', {}).get('extra', {})
-        else:
-            extra_options = {}
+      
+        extra_options = {}
         metadata.add_text("CreationTime", datetime.datetime.now().isoformat(" ")[:19])
 
         if meta_batch is not None and unique_id in meta_batch.outputs:
@@ -435,24 +317,6 @@ class VideoCombine:
             if  "environment" in video_format:
                 env.update(video_format["environment"])
 
-            # if "pre_pass" in video_format:
-            #     if meta_batch is not None:
-            #         #Performing a prepass requires keeping access to all frames.
-            #         #Potential solutions include keeping just output frames in
-            #         #memory or using 3 passes with intermediate file, but
-            #         #very long gifs probably shouldn't be encouraged
-            #         raise Exception("Formats which require a pre_pass are incompatible with Batch Manager.")
-            #     images = [b''.join(images)]
-            #     os.makedirs(folder_paths.get_temp_directory(), exist_ok=True)
-            #     in_args_len = args.index("-i") + 2 # The index after ["-i", "-"]
-            #     pre_pass_args = args[:in_args_len] + video_format['pre_pass']
-            #     merge_filter_args(pre_pass_args)
-            #     try:
-            #         subprocess.run(pre_pass_args, input=images[0], env=env,
-            #                        capture_output=True, check=True)
-            #     except subprocess.CalledProcessError as e:
-            #         raise Exception("An error occurred in the ffmpeg prepass:\n" \
-            #                 + e.stderr.decode(*ENCODE_ARGS))
             if "inputs_main_pass" in video_format:
                 in_args_len = args.index("-i") + 2 # The index after ["-i", "-"]
                 args = args[:in_args_len] + video_format['inputs_main_pass'] + args[in_args_len:]
@@ -547,7 +411,7 @@ class VideoCombine:
                     os.remove(intermediate)
         preview = {
                 "filename": file,
-                "subfolder": subfolder,
+                "subfolder": "",
                 "type": "output" if True else "temp",
                 "format": format,
                 "frame_rate": frame_rate,

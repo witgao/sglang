@@ -1,7 +1,7 @@
 from einops import rearrange, repeat
 import torch
 import torch.nn as nn
-from ..wanvideo.modules.attention import attention
+from ..model import attention
 
 def timestep_transform(
     t,

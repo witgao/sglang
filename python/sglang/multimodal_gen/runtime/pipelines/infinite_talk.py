@@ -22,7 +22,7 @@ from sglang.multimodal_gen.runtime.pipelines.stages import (
     AudioEncodeStage,
     VAEEncoderStage,
     VAEDecoderStage,
-    WanSamplerStage
+    WanSamplerStage,
 )
 
 
@@ -37,21 +37,20 @@ class InfiniteTalkPipeline(LoRAPipeline, ComposedPipelineBase):
         "text_encoder",
         "tokenizer",
         "vae",
-        "transformer"
+        "transformer",
     ]
 
     def initialize_pipeline(self, server_args: ServerArgs):
         pass
 
     def create_pipeline_stages(self, server_args: ServerArgs):
-        self.add_stage(
-            stage_name="InputStage",
-            stage=InputStage()
-        )
+        self.add_stage(stage_name="InputStage", stage=InputStage())
         self.add_stage(
             stage_name="AudioEncodeStage",
-            stage=AudioEncodeStage(audio_processor=self.get_module("audio_processor"),
-                                   audio_encoder=self.get_module("audio_encoder")),
+            stage=AudioEncodeStage(
+                audio_processor=self.get_module("audio_processor"),
+                audio_encoder=self.get_module("audio_encoder"),
+            ),
         )
         self.add_stage(
             stage_name="image_encoding_stage",
@@ -60,11 +59,6 @@ class InfiniteTalkPipeline(LoRAPipeline, ComposedPipelineBase):
                 image_processor=self.get_module("image_processor"),
             ),
         )
-        # self.add_stage(
-        #     stage_name="ImageEncodeStage",
-        #     stage=ImageEncodeStage(image_processor=self.get_module("image_processor"),
-        #                            image_encoder=self.get_module("image_encoder")),
-        # )
         self.add_stage(
             stage_name="prompt_encoding_stage",
             stage=TextEncodingStage(
@@ -72,11 +66,6 @@ class InfiniteTalkPipeline(LoRAPipeline, ComposedPipelineBase):
                 tokenizers=[self.get_module("tokenizer")],
             ),
         )
-        # self.add_stage(
-        #     stage_name="TextEncodeStage",
-        #     stage=TextEncodeStage(
-        #         text_encoder=self.get_module("text_encoder")),
-        # )
         self.add_stage(
             stage_name="VAEEncoderStage",
             stage=VAEEncoderStage(vae=self.get_module("vae")),

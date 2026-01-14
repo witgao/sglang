@@ -189,7 +189,7 @@ class AudioEncodeStage(PipelineStage):
             model=self.audio_processor, audio=audio, sample_rate=sample_rate)
 
         audio_embeds = self.wav2vec2(model=self.audio_encoder, vocals=vocals,
-                                     sample_rate=sample_rate, normalize_loudness=True, fps=25, num_frames=100)
+                                     sample_rate=sample_rate, normalize_loudness=True, fps=25, num_frames=25)
         batch.audio_embeds.append(audio_embeds)
 
         return batch

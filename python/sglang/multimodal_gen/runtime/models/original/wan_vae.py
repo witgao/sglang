@@ -581,8 +581,8 @@ class VideoVAE_(nn.Module):
 
 
     def encode(self, x, pbar=True, sample=False):
-        t = x.shape[2]
-        iter_ = 1 + (t - 1) // 4
+        t = x.shape[2] # [1, 3, 81, 480, 480]
+        iter_ = 1 + (t - 1) // 4 # 21
         # if pbar:
         #     pbar = ProgressBar(iter_)
 
@@ -860,7 +860,7 @@ class OriginalWanVAEModel(torch.nn.Module, FromOriginalModelMixin):
 
     def single_encode(self, video, device, pbar=True, sample=False):
         video = video.to(device)
-        x = self.model.encode(video, pbar=pbar, sample=sample)
+        x = self.model.encode(video, pbar=pbar, sample=sample) #[1, 16, 21, 60, 60]
         return x.float()
 
     def single_decode(self, hidden_state, device, pbar=True):
@@ -893,10 +893,10 @@ class OriginalWanVAEModel(torch.nn.Module, FromOriginalModelMixin):
                     hidden_state = self.double_encode(video, device, pbar=pbar, sample=sample)
                 else:
                     hidden_state = self.single_encode(video, device, pbar=pbar, sample=sample)
-            hidden_state = hidden_state.squeeze(0)
+            hidden_state = hidden_state.squeeze(0) # [16, 21, 60, 60]
             hidden_states.append(hidden_state)
         hidden_states = torch.stack(hidden_states)
-        return hidden_states
+        return hidden_states # [1, 16, 21, 60, 60]
 
 
     def decode(self, hidden_states, device, tiled=False, end_=False, tile_size=(34, 34), tile_stride=(18, 16), pbar=True):

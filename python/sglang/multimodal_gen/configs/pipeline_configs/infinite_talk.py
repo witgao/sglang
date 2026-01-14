@@ -7,6 +7,9 @@ from sglang.multimodal_gen.configs.models.encoders import (
     T5Config,
     BaseEncoderOutput,  
 )
+from sglang.multimodal_gen.configs.models import DiTConfig, EncoderConfig, VAEConfig
+from sglang.multimodal_gen.configs.models.vaes import WanVAEConfig
+from sglang.multimodal_gen.configs.models.dits import WanVideoConfig
 
 from sglang.multimodal_gen.configs.pipeline_configs.base import (
     ModelTaskType,
@@ -19,28 +22,32 @@ def t5_postprocess_text(outputs: BaseEncoderOutput, _text_inputs) -> torch.Tenso
     seq_lens = mask.gt(0).sum(dim=1).long()
     assert torch.isnan(hidden_state).sum() == 0
     prompt_embeds = [u[:v] for u, v in zip(hidden_state, seq_lens, strict=True)]
-    # prompt_embeds_tensor: torch.Tensor = torch.stack(
-    #     [
-    #         torch.cat([u, u.new_zeros(512 - u.size(0), u.size(1))])
-    #         for u in prompt_embeds
-    #     ],
-    #     dim=0,
-    # )
     return prompt_embeds
 
 @dataclass
 class InfiniteTalkConfig(PipelineConfig):
     task_type: ModelTaskType = ModelTaskType.I2V
     
+    # DiT
+    dit_config: DiTConfig = field(default_factory=WanVideoConfig)
+    
+    # VAE
+    vae_config: VAEConfig = field(default_factory=WanVAEConfig)
+    vae_tiling: bool = False
+    vae_sp: bool = False
+    
+    # Denoising stage
+    flow_shift: float | None = 7.0
+
     # Text encoding stage
     text_encoder_configs: tuple[EncoderConfig, ...] = field(
         default_factory=lambda: (T5Config(),)
     )
-    text_encoder_precisions: tuple[str, ...] = field(default_factory=lambda: ("bf16",))
     postprocess_text_funcs: tuple[Callable[[BaseEncoderOutput], torch.Tensor], ...] = (
         field(default_factory=lambda: (t5_postprocess_text,))
     )
 
+    # Image encoding stage
     image_encoder_config: EncoderConfig = field(
         default_factory=CLIPVisionConfig)
     image_encoder_precision: str = "fp32"
@@ -49,6 +56,11 @@ class InfiniteTalkConfig(PipelineConfig):
             output_hidden_states=True,
         )
     )
+    
+    # Precision for each component
+    precision: str = "bf16"
+    vae_precision: str = "bf16"
+    text_encoder_precisions: tuple[str, ...] = field(default_factory=lambda: ("bf16",))
 
     def postprocess_image(self, image):
         return image.hidden_states[-2]
